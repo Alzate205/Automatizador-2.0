@@ -32,6 +32,8 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 
+import pandas as pd
+
 from auditor import (
     ARCHIVO_HISTORIAL,
     PUERTO_POR_DEFECTO,
@@ -57,8 +59,8 @@ BASE_URL = "https://www.betplay.com.co"
 REMITENTE_2FA = "Betplay"
 
 # Espera anti-detección entre cuentas (en minutos).
-PAUSA_MIN_MINUTOS = 3
-PAUSA_MAX_MINUTOS = 10
+PAUSA_MIN_MINUTOS = 4
+PAUSA_MAX_MINUTOS = 12
 
 # Estrategia de navegador. False = conectar a navegadores ya abiertos por puerto;
 # True = lanzar un Chrome con perfil aislado por cuenta (gestor_perfiles).
@@ -96,13 +98,14 @@ async def _resolver_endpoint(row, perfil_id: int) -> tuple[int, str]:
 # ---------------------------------------------------------------------------
 
 async def procesar_fila(row, perfil_id: int) -> dict:
-    """Resuelve navegador + 2FA y ejecuta process_user para una cuenta."""
+    """Resuelve navegador + 2FA y ejecuta process_user (login o registro)."""
     email = row.get("Correo") or row.get("Usuario")
     password = str(row.get("Password", ""))
     nombre = str(row.get("Nombre", "") or "")
+    modo = "registro" if str(row.get("Modo", "")).strip().lower() == "registro" else "login"
     etiqueta = nombre or email or f"fila_{perfil_id}"
 
-    log.info(f"[{etiqueta}] Preparando navegador...")
+    log.info(f"[{etiqueta}] Preparando navegador... (modo: {modo})")
     puerto, endpoint = await _resolver_endpoint(row, perfil_id)
     log.info(f"[{etiqueta}] Endpoint CDP: {endpoint}")
 
@@ -115,6 +118,9 @@ async def procesar_fila(row, perfil_id: int) -> dict:
         async def code_provider():
             return await esperar_y_extraer_codigo(str(email), clave_correo, REMITENTE_2FA)
 
+    # Datos para el modo registro: limpiamos NaN -> "" para no romper el tecleo.
+    datos = {k: ("" if pd.isna(v) else v) for k, v in row.to_dict().items()}
+
     resultado = await process_user(
         cdp_endpoint=endpoint,
         username=str(email),
@@ -122,12 +128,14 @@ async def procesar_fila(row, perfil_id: int) -> dict:
         nombre=nombre,
         code_provider=code_provider,
         base_url=BASE_URL,
+        datos=datos,
+        modo=modo,
     )
 
     registrar_historial(
         usuario=str(email),
         estado=resultado.get("estado", "desconocido"),
-        detalle=f"Perfil CDP puerto {puerto}",
+        detalle=f"Modo: {modo} | Perfil/puerto: {puerto}",
         saldo=resultado.get("saldo", 0.0),
         verificada=resultado.get("verificada", "desconocido"),
         limitada=resultado.get("limitada", False),
@@ -150,6 +158,7 @@ async def main() -> None:
         log.error(f"No se pudo leer {EXCEL_INPUT}: {e}")
         return
 
+    resumen: dict[str, int] = {}
     for idx, row in df.iterrows():
         log.info("=" * 60)
         log.info(f"Cuenta {idx + 1}/{len(df)}  ·  {datetime.now():%H:%M:%S}")
@@ -167,6 +176,10 @@ async def main() -> None:
             log.error(f"Fallo procesando la cuenta {idx + 1}: {e}")
             resultado = {"saldo": 0.0, "verificada": "error", "limitada": False, "estado": "error"}
 
+        # Conteo para el resumen final.
+        estado = resultado.get("estado", "desconocido")
+        resumen[estado] = resumen.get(estado, 0) + 1
+
         # Guardar resultados (columnas de SALIDA) en el DataFrame.
         df.at[idx, "Saldo"] = resultado.get("saldo", 0.0)
         df.at[idx, "Verificada"] = resultado.get("verificada", "desconocido")
@@ -180,6 +193,8 @@ async def main() -> None:
             log.info(f"Pausa anti-detección: {segundos / 60:.1f} min antes de la siguiente")
 
     df.to_excel(EXCEL_OUTPUT, index=False)
+    if resumen:
+        log.info("Resumen: " + " · ".join(f"{k}={v}" for k, v in sorted(resumen.items())))
     log.exito(f"✅ Proceso completado. Resultados en {EXCEL_OUTPUT} y {ARCHIVO_HISTORIAL}")
 
 

@@ -43,6 +43,10 @@ ERRORES_PW = (PlaywrightTimeout, PlaywrightError)
 BASE_URL_POR_DEFECTO = "https://www.betplay.com.co"
 MONTO_PRUEBA_LIMITE = "8000000"  # monto alto para forzar (si aplica) la alerta de límite
 
+# Pausa (segundos, rango aleatorio) para resolver el reCAPTCHA MANUALMENTE en el
+# navegador durante el registro. Ajústalo según el tiempo que necesites.
+ESPERA_CAPTCHA_SEG = (40, 70)
+
 # Palabras (específicas de Betplay) que delatan una cuenta limitada. La
 # comparación sin tildes/mayúsculas la realiza restricciones.contiene_restriccion.
 PALABRAS_LIMITE_BETPLAY = (
@@ -76,7 +80,9 @@ async def human_type(page, selector: str, text: str, delay_range=(40, 140)) -> b
     try:
         await page.locator(selector).first.click()
         await human_delay(0.3, 0.8)
-        for char in text:
+        # str(text): tolera valores numéricos (p. ej. Cédula/Teléfono leídos del
+        # Excel como int) sin romper el tecleo carácter a carácter.
+        for char in str(text):
             await page.keyboard.type(char, delay=random.randint(*delay_range))
             if random.random() < 0.12:
                 await human_delay(0.15, 0.45)
@@ -100,6 +106,100 @@ async def scroll_humano(page):
     await page.evaluate("window.scrollBy(0, -document.body.scrollHeight * 0.15)")
 
 
+# ==================== REGISTRO COMPLETO (BETPLAY) ====================
+
+async def registrar_cuenta(page, datos: Dict[str, Any], base_url: str = BASE_URL_POR_DEFECTO) -> bool:
+    """
+    Registro completo con los selectores reales de Betplay.
+
+    `datos` admite las claves: Cedula, ExpedicionDD/MM/YYYY, LugarExpedicion,
+    NacimientoDD/MM/YYYY, PrimerNombre, PrimerApellido, Telefono, Correo, Password.
+
+    Antes del envío hace una PAUSA MANUAL para que resuelvas el reCAPTCHA a mano
+    en el navegador (ver ESPERA_CAPTCHA_SEG). Devuelve True si envió el
+    formulario, False ante cualquier fallo.
+    """
+    try:
+        logger.info("Iniciando registro completo...")
+        await page.goto(base_url, wait_until="domcontentloaded", timeout=45000)
+        await human_delay(3, 6)
+
+        await page.click("text=/Registrarse|Crear cuenta|Registro/i", timeout=12000)
+        await human_delay(3, 5)
+
+        # Tipo de documento (se selecciona por etiqueta visible, no por value).
+        await page.select_option(
+            'select[name*="tipoDocumento"], select#tipoDocumento',
+            label="Cédula de ciudadanía",
+        )
+        await human_delay(1, 2)
+
+        # Número de identificación (cédula).
+        await human_type(
+            page,
+            'input[name*="numeroIdentificacion"], input#numeroIdentificacion',
+            datos.get("Cedula", ""),
+        )
+
+        # Fecha de expedición (con valores por defecto si no vienen en datos).
+        await human_type(page, 'input[placeholder*="DD"][name*="expedicion"], input[name*="fechaExpedicionDD"]', datos.get("ExpedicionDD", "15"))
+        await human_type(page, 'input[placeholder*="MM"][name*="expedicion"], input[name*="fechaExpedicionMM"]', datos.get("ExpedicionMM", "06"))
+        await human_type(page, 'input[placeholder*="YYYY"][name*="expedicion"], input[name*="fechaExpedicionYYYY"]', datos.get("ExpedicionYYYY", "1995"))
+
+        await human_type(page, 'input[name*="lugarExpedicion"], input#lugarExpedicion', datos.get("LugarExpedicion", "BOGOTA"))
+
+        # Fecha de nacimiento.
+        await human_type(page, 'input[placeholder*="DD"][name*="nacimiento"], input[name*="fechaNacimientoDD"]', datos.get("NacimientoDD", "10"))
+        await human_type(page, 'input[placeholder*="MM"][name*="nacimiento"], input[name*="fechaNacimientoMM"]', datos.get("NacimientoMM", "03"))
+        await human_type(page, 'input[placeholder*="YYYY"][name*="nacimiento"], input[name*="fechaNacimientoYYYY"]', datos.get("NacimientoYYYY", "1995"))
+
+        await human_type(page, 'input[name*="primerNombre"], input#primerNombre', datos.get("PrimerNombre", ""))
+        await human_type(page, 'input[name*="primerApellido"], input#primerApellido', datos.get("PrimerApellido", ""))
+
+        # Contacto.
+        await human_type(page, 'input[name*="telefono"], input#telefonoMovil', datos.get("Telefono", ""))
+        await human_type(page, 'input[name*="email"], input#correoElectronico, input[placeholder*="orreo"]', datos.get("Correo", ""))
+
+        # Contraseña + confirmación.
+        pwd = datos.get("Password", "")
+        await human_type(page, 'input[name*="password"], input#contrasena', pwd)
+        await human_type(page, 'input[name*="confirmPassword"], input#confirmarContrasena', pwd)
+
+        # PEP (Persona Expuesta Políticamente).
+        await page.select_option('select[name*="pep"], select#pep', label="No")
+
+        # Aceptar todos los checkboxes (términos, mayoría de edad, etc.).
+        for checkbox in await page.locator('input[type="checkbox"]').all():
+            try:
+                await checkbox.check()
+                await human_delay(0.4, 0.8)
+            except ERRORES_PW:
+                pass
+
+        # ---------- CAPTCHA MANUAL ----------
+        # Betplay usa reCAPTCHA; no lo resolvemos automáticamente. Pausamos para
+        # que lo resuelvas a mano en la ventana del navegador antes de enviar.
+        logger.warning("⚠️  Si aparece un reCAPTCHA, resuélvelo MANUALMENTE en el navegador.")
+        logger.info(
+            f"Esperando ~{ESPERA_CAPTCHA_SEG[0]}-{ESPERA_CAPTCHA_SEG[1]} s para la resolución manual..."
+        )
+        await human_delay(*ESPERA_CAPTCHA_SEG)
+
+        # Botón final.
+        await page.click('button:has-text("Completar Registro"), button[type="submit"]', timeout=15000)
+        await human_delay(6, 10)
+
+        logger.info("Formulario de registro enviado")
+        return True
+
+    except ERRORES_PW as e:
+        logger.error(f"Error en registro (Playwright): {e}")
+        return False
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Error inesperado en registro: {e}")
+        return False
+
+
 # ==================== PROCESADOR PRINCIPAL ====================
 
 async def process_user(
@@ -110,10 +210,13 @@ async def process_user(
     verification_code: Optional[str] = None,
     code_provider: Optional[Callable[[], Awaitable[Optional[str]]]] = None,
     base_url: str = BASE_URL_POR_DEFECTO,
+    datos: Optional[Dict[str, Any]] = None,
+    modo: str = "login",
 ) -> Dict[str, Any]:
     """
-    Se adjunta a un navegador externo (CDP), inicia sesión, resuelve el 2FA si
-    aparece, extrae el saldo, verifica el estado de la cuenta y prueba el límite.
+    Se adjunta a un navegador externo (CDP). Con modo="registro" crea primero la
+    cuenta (registrar_cuenta usando `datos`); luego inicia sesión, resuelve el
+    2FA si aparece, extrae el saldo, verifica el estado y prueba el límite.
 
     El código 2FA se resuelve EN EL MOMENTO correcto (cuando aparece el campo,
     tras enviar el login): si se pasa `code_provider` (callable async que
@@ -151,6 +254,17 @@ async def process_user(
             else:
                 page = await context.new_page()
                 new_page_created = True
+
+            # ---------- Registro (opcional) ----------
+            if modo == "registro":
+                if not await registrar_cuenta(page, datos or {}, base_url):
+                    return {
+                        "saldo": 0.0,
+                        "verificada": "no",
+                        "limitada": False,
+                        "estado": "fallo_registro",
+                        "timestamp": datetime.now().isoformat(),
+                    }
 
             # ---------- Navegación inicial ----------
             logger.info(f"[{etiqueta}] Navegando a {base_url}")
