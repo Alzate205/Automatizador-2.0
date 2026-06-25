@@ -3,10 +3,12 @@ crear_ejemplo.py
 ================
 
 Genera un archivo cuentas.xlsx de ejemplo con datos ficticios secuenciales,
-100% compatible con el esquema de 9 columnas del orquestador (auditor.py):
+100% compatible con el esquema de ENTRADA del orquestador (auditor.py):
 
-    Usuario, Password, Correo, ClaveCorreo, Puerto, Estado, Saldo,
-    Verificada, Limitada
+    Usuario, Password, Nombre, Correo, ClaveCorreo, Puerto
+
+(Saldo, Verificada y Limitada NO van aquí: son resultados de la auditoría y se
+escriben en historial_auditoria.csv.)
 
 Sirve para probar el flujo (lectura, historial y consola) sin datos reales y
 sin tener que rellenar el Excel a mano: los puertos CDP se asignan de forma
@@ -37,17 +39,12 @@ def construir_datos(n: int) -> list[dict]:
             {
                 "Usuario": f"usuario_demo_{i:02d}",
                 "Password": f"clave-ficticia-{i}",
+                "Nombre": f"Nombre Demo {i:02d}",
                 "Correo": f"demo{i:02d}@ejemplo.com",
                 # App password ficticia con el formato típico (4 grupos de 4).
                 "ClaveCorreo": f"abcd efgh ijkl {i:04d}",
                 # Puerto de depuración remota secuencial: 9222, 9223, 9224, ...
                 "Puerto": PUERTO_POR_DEFECTO + (i - 1),
-                "Estado": "pendiente",
-                # Saldo ficticio creciente: 0.0, 125.5, 251.0, ...
-                "Saldo": round((i - 1) * 125.5, 2),
-                # Alterna sí/no para ver ambos estados en las pruebas.
-                "Verificada": "si" if i % 2 == 1 else "no",
-                "Limitada": "si" if i % 3 == 0 else "no",
             }
         )
     return filas

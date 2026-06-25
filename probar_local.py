@@ -18,6 +18,7 @@ Uso:
 """
 
 import os
+from random import random
 
 from auditor import (
     ARCHIVO_HISTORIAL,
@@ -61,6 +62,28 @@ def main() -> None:
         else:
             log.error(f"{usuario}: sin verificar (simulado)")
             registrar_historial(usuario, "ERROR", "Cuenta no verificada (simulado)")
+        
+    # En probar_local.py - dentro del bucle
+    for idx, row in df.iterrows():
+    # Simulación de resultado (para pruebas locales)
+        resultado_simulado = {
+            "saldo": random.uniform(50000, 2500000),
+            "verificada": "si" if idx % 3 != 0 else "no",   # Alterna resultados
+            "limitada": idx % 5 == 0,
+            "estado": "exitosa" if idx % 4 != 0 else "revisar"
+        }
+    
+    # Registrar en auditoría
+        registrar_historial(
+            usuario=row.get("Usuario") or row.get("Correo"),
+            estado=resultado_simulado["estado"],
+            saldo=resultado_simulado["saldo"],
+            verificada=resultado_simulado["verificada"],
+            limitada=resultado_simulado["limitada"],
+            notas=f"Prueba local - Perfil {row.get('Puerto', 'N/A')}"
+        )
+    
+    print(f"✅ {row.get('Usuario')} → Saldo: ${resultado_simulado['saldo']:,.0f} | Verificada: {resultado_simulado['verificada']} | Limitada: {resultado_simulado['limitada']}")
 
     log.exito("=== Prueba finalizada ===")
 

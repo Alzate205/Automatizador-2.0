@@ -83,19 +83,17 @@ MONTO_PRUEBA = 999999.99
 ARCHIVO_EXCEL = "cuentas.xlsx"
 ARCHIVO_HISTORIAL = "historial_auditoria.csv"
 
-# Esquema de 9 columnas del Excel de cuentas (mismo que genera crear_ejemplo.py).
-# Puerto y ClaveCorreo además se leen con .get()/valor por defecto en el flujo,
-# por robustez, aunque aquí formen parte del esquema esperado.
+# Esquema de ENTRADA del Excel de cuentas: solo lo que el orquestador necesita
+# leer (credenciales, datos de 2FA y puerto CDP). Los resultados de la auditoría
+# (Saldo, Verificada, Limitada) son SALIDA y se escriben en historial_auditoria.csv,
+# no se leen de aquí.
 COLUMNAS_ESPERADAS = [
-    "Usuario",
-    "Password",
-    "Correo",
-    "ClaveCorreo",
-    "Puerto",
-    "Estado",
-    "Saldo",
-    "Verificada",
-    "Limitada",
+    "Usuario",      # identificador de login (puede ser usuario o correo)
+    "Password",     # contraseña de la cuenta
+    "Nombre",       # nombre descriptivo (metadato para identificar la cuenta)
+    "Correo",       # buzón donde llega el código 2FA
+    "ClaveCorreo",  # app password del buzón de 2FA
+    "Puerto",       # puerto de depuración remota (CDP) del navegador externo
 ]
 
 # Tiempos de espera (ms).

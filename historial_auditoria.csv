@@ -1,4 +1,4 @@
-Hora,Usuario,Estado,Detalle
-2026-06-25 11:09:30,usuario_demo_01,ERROR,Cuenta no verificada (simulado)
-2026-06-25 11:09:30,usuario_demo_02,EXITO,Cuenta verificada (simulado)
-2026-06-25 11:09:30,usuario_demo_03,ERROR,Cuenta no verificada (simulado)
+Hora,Usuario,Estado,Detalle,Saldo,Verificada,Limitada
+2026-06-25 14:19:19,usuario_demo_01,ERROR,Cuenta no verificada (simulado),,,
+2026-06-25 14:19:19,usuario_demo_02,ERROR,Cuenta no verificada (simulado),,,
+2026-06-25 14:19:19,usuario_demo_03,ERROR,Cuenta no verificada (simulado),,,
