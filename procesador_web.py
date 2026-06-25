@@ -56,6 +56,20 @@ PALABRAS_LIMITE_BETPLAY = (
     "no permitido",
 )
 
+# --- Punto 6: selectores candidatos (de más específico a más amplio). Se unen
+# en una sola lista CSS y se combinan con get_by_text vía .or_() ---
+SELECTORES_SALDO = (
+    "#balance, .balance-amount, .user-balance, .saldo, .balance, "
+    '[class*="balance"], [data-testid*="balance"]'
+)
+SELECTORES_VERIFICADA = (
+    ".verified-badge, .badge-verified, .status-verified, .status-success, "
+    '[class*="verified"], [data-testid*="verified"]'
+)
+
+# --- Punto 9: ligas/eventos populares para abrir un mercado en la prueba de límite ---
+LIGAS_LIMITE_REGEX = r"Liga BetPlay|Primera A|BetPlay Cup|Colombia"
+
 
 # ==================== COMPORTAMIENTO HUMANO ====================
 
@@ -349,21 +363,99 @@ async def process_user(
             except ERRORES_PW:
                 pass
 
-            # ---------- Extraer saldo (utilidad compartida) ----------
-            saldo = 0.0
-            try:
-                # CSS + texto combinados con .or_(): mezclar 'text=' dentro de una
-                # lista CSS por comas no es válido en Playwright. El fallback de
-                # texto busca un patrón monetario ("$ 1.234.567"), no un "$" suelto.
-                saldo_locator = page.locator("#balance, .balance, .user-balance").or_(
-                    page.get_by_text(re.compile(r"\$\s*[\d.,]+"))
-                ).first
-                await saldo_locator.wait_for(state="visible", timeout=8000)
-                saldo_text = await saldo_locator.inner_text(timeout=5000)
-                saldo = extraer_saldo(saldo_text)
-                logger.info(f"[{etiqueta}] Saldo extraído: ${saldo:,.2f}")
-            except ERRORES_PW:
-                logger.warning(f"[{etiqueta}] No se pudo extraer el saldo")
+            # ==================== PUNTO 6: SALDO + VERIFICADA (MEJORADO) ====================
+            async def extraer_info_cuenta(page) -> Dict[str, Any]:
+                saldo = 0.0
+                verificada = "desconocido"
+
+                try:
+                    # Saldo principal (el más confiable según tu captura)
+                    saldo_selectors = [
+                        'td.balance-td',                    # ← Exacto de tu captura
+                        '.balance-amount', 
+                        '[class*="balance"]',
+                        'text=Saldo:',
+                        'text=$', 
+                        '.user-balance'
+                    ]
+                    
+                    for selector in saldo_selectors:
+                        try:
+                            elem = page.locator(selector).first
+                            await elem.wait_for(state="visible", timeout=8000)
+                            texto = await elem.inner_text(timeout=5000)
+                            
+                            # Limpieza para formato colombiano (0,3 → 0.3)
+                            clean = texto.replace(',', '.').replace('$', '').strip()
+                            if clean.replace('.', '').replace(',', '').isdigit():
+                                saldo = float(clean)
+                                log.info(f"✅ Saldo extraído: ${saldo:,.2f}")
+                                break
+                        except:
+                            continue
+                except Exception as e:
+                    log.warning(f"Error extrayendo saldo: {e}")
+
+                # Verificada (busca badge o texto)
+                try:
+                    if await page.locator('text=Verificada|Verificado|Identidad confirmada|.verified').count() > 0:
+                        verificada = "si"
+                except:
+                    pass
+
+                return {"saldo": saldo, "verificada": verificada}
+
+
+            # ==================== PUNTO 9: PRUEBA DE LÍMITE (MEJORADO) ====================
+            async def probar_limite(page) -> bool:
+                """
+                Verifica si la cuenta está limitada yendo directamente a la página oficial.
+                """
+                try:
+                    log.info("🔍 Revisando límites oficiales del usuario...")
+                    
+                    await page.goto("https://www.betplay.com.co/menuusuario?optionMenu=1", 
+                                wait_until="networkidle", timeout=20000)
+                    
+                    await pausa_humana(3, 5)
+
+                    # Extraer todo el texto visible de la página
+                    page_text = await page.locator("body").inner_text(timeout=10000)
+                    
+                    # Palabras clave que indican límites bajos / cuenta limitada
+                    palabras_limitantes = ["10.000.000", "10000000", "$10.000.000", 
+                                        "Límite Diario", "bajo", "restringido", "limitado"]
+                    
+                    limitada = any(palabra.lower() in page_text.lower() for palabra in palabras_limitantes)
+
+                    if limitada:
+                        log.info("🚫 CUENTA LIMITADA DETECTADA (Límite Diario bajo)")
+                        # Opcional: extraer los límites exactos
+                        try:
+                            limite_diario = await page.locator('text=Límite Diario').locator("..").inner_text()
+                            log.info(f"Límite Diario: {limite_diario.strip()}")
+                        except:
+                            pass
+                        return True
+                    else:
+                        log.info("✅ Cuenta sin límites restrictivos aparentes")
+                        return False
+
+                except Exception as e:
+                    log.warning(f"Error al verificar límites: {e}")
+                    return False
+                
+
+
+            async def extraer_bonos(page):
+                try:
+                    await page.goto("https://www.betplay.com.co/menuusuario?optionMenu=4", wait_until="networkidle")
+                    await pausa_humana(2, 4)
+                    bonos_text = await page.locator("body").inner_text()
+                    if "Bono Activo" in bonos_text or "Bono Pendiente" in bonos_text:
+                        log.info("🎁 Bono detectado")
+                except:
+                    pass    
 
             # ---------- Verificación de cuenta ----------
             # Selectores más cercanos a Betplay. Combinamos CSS + texto con
@@ -371,9 +463,7 @@ async def process_user(
             # CSS separada por comas NO es válido en Playwright.
             verificada = "no"
             try:
-                verificada_loc = page.locator(
-                    ".badge-verified, .verified-badge, .status-success"
-                ).or_(
+                verificada_loc = page.locator(SELECTORES_VERIFICADA).or_(
                     page.get_by_text(
                         re.compile(
                             r"Verificad[ao]|Cuenta verificada|Identidad confirmada",
@@ -444,8 +534,8 @@ async def _probar_limite(page, base_url: str, etiqueta: str) -> bool:
         await page.goto(f"{base_url}/deportes/futbol", wait_until="networkidle", timeout=25000)
         await human_delay(3, 6)
 
-        # Partido popular
-        await page.locator("text=/Liga BetPlay|Primera A|BetPlay Cup/i").first.click()
+        # Partido popular (liga/evento)
+        await page.locator(f"text=/{LIGAS_LIMITE_REGEX}/i").first.click()
         await human_delay(2.5, 5)
 
         # Seleccionar cualquier cuota
