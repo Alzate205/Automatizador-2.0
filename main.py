@@ -62,7 +62,7 @@ PAUSA_MAX_MINUTOS = 10
 
 # Estrategia de navegador. False = conectar a navegadores ya abiertos por puerto;
 # True = lanzar un Chrome con perfil aislado por cuenta (gestor_perfiles).
-USAR_GESTOR_PERFILES = False
+USAR_GESTOR_PERFILES = True  # Cambiar a False si ya tienes navegadores abiertos por puerto
 
 
 # ---------------------------------------------------------------------------

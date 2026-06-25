@@ -22,6 +22,7 @@ Ejecución (abre el navegador automáticamente en http://localhost:8501):
 from __future__ import annotations
 
 import io
+import os
 
 import altair as alt
 import pandas as pd
@@ -32,6 +33,16 @@ COLUMNAS_SENSIBLES = ["Password"]
 
 # Ruta del Excel local donde se persisten las ediciones.
 RUTA_EXCEL = "cuentas.xlsx"
+
+# Cargar preferentemente el historial de auditoría
+RUTA_HISTORIAL = "historial_auditoria.csv"
+
+@st.cache_data(show_spinner=False)
+def cargar_historial() -> pd.DataFrame:
+    """Carga historial_auditoria.csv si existe; si no, DataFrame vacío."""
+    if os.path.exists(RUTA_HISTORIAL):
+        return pd.read_csv(RUTA_HISTORIAL)
+    return pd.DataFrame()
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +63,14 @@ def calcular_porcentaje_verificadas(df: pd.DataFrame) -> float:
     return round(verificadas / len(df) * 100, 1)
 
 
+def _contar_limitadas(df: pd.DataFrame) -> int:
+    """Cuenta filas con Limitada verdadero, tolerando bool o texto (True/si/1)."""
+    if "Limitada" not in df.columns:
+        return 0
+    valores = df["Limitada"].astype(str).str.strip().str.lower()
+    return int(valores.isin(["true", "si", "sí", "1", "limitada"]).sum())
+
+
 def to_excel_bytes(df: pd.DataFrame) -> bytes:
     """Serializa un DataFrame a bytes de Excel para el botón de descarga."""
     buffer = io.BytesIO()
@@ -67,31 +86,47 @@ def to_excel_bytes(df: pd.DataFrame) -> bytes:
 def main() -> None:
     st.set_page_config(page_title="Auditoría — Dashboard", page_icon="📊", layout="wide")
     st.title("📊 Dashboard de Auditoría de Cuentas")
-    st.caption("Carga tu archivo cuentas.xlsx para visualizar y filtrar los registros.")
+    st.caption("Visualiza el archivo cuentas.xlsx subido o el historial de auditoría.")
 
-    # --- 1) Carga de datos ---------------------------------------------------
-    archivo = st.file_uploader("Cargar archivo Excel (cuentas.xlsx)", type=["xlsx"])
+    # --- 1) Fuente de datos --------------------------------------------------
+    fuente = st.radio(
+        "Fuente de datos",
+        ["Archivo subido (cuentas.xlsx)", "Historial de auditoría (historial_auditoria.csv)"],
+        horizontal=True,
+    )
+    usando_historial = fuente.startswith("Historial")
 
-    if archivo is None:
-        st.info("Esperando que cargues un archivo .xlsx para mostrar el panel.")
-        return
-
-    # Carga el archivo a session_state UNA sola vez por archivo subido. Así las
-    # ediciones posteriores persisten entre reruns y no las pisa la caché.
-    file_id = f"{archivo.name}:{len(archivo.getvalue())}"
-    if st.session_state.get("file_id") != file_id:
-        try:
-            st.session_state.df = cargar_excel(archivo.getvalue())
-        except Exception as exc:  # noqa: BLE001
-            st.error(f"No se pudo leer el archivo: {exc}")
+    if usando_historial:
+        # Vista de SOLO LECTURA del historial generado por el auditor.
+        df = cargar_historial()
+        if df.empty:
+            st.info(
+                "No hay historial todavía. Ejecuta el auditor para generar "
+                "historial_auditoria.csv."
+            )
             return
-        st.session_state.file_id = file_id
+        st.caption(f"📜 Mostrando el historial de auditoría: {len(df)} registro(s).")
+    else:
+        archivo = st.file_uploader("Cargar archivo Excel (cuentas.xlsx)", type=["xlsx"])
+        if archivo is None:
+            st.info("Esperando que cargues un archivo .xlsx para mostrar el panel.")
+            return
 
-    df = st.session_state.df
+        # Carga el archivo a session_state UNA sola vez por archivo subido. Así las
+        # ediciones posteriores persisten entre reruns y no las pisa la caché.
+        file_id = f"{archivo.name}:{len(archivo.getvalue())}"
+        if st.session_state.get("file_id") != file_id:
+            try:
+                st.session_state.df = cargar_excel(archivo.getvalue())
+            except Exception as exc:  # noqa: BLE001
+                st.error(f"No se pudo leer el archivo: {exc}")
+                return
+            st.session_state.file_id = file_id
 
-    if df.empty:
-        st.warning("El archivo se cargó pero no contiene filas.")
-        return
+        df = st.session_state.df
+        if df.empty:
+            st.warning("El archivo se cargó pero no contiene filas.")
+            return
 
     # --- 2) Buscador y filtros (se aplican a métricas, gráficos y tabla) -----
     st.subheader("Buscar y filtrar")
@@ -124,7 +159,7 @@ def main() -> None:
 
     # --- 3) Panel de métricas (sobre los datos filtrados) -------------------
     st.subheader("Resumen")
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
 
     col1.metric("👥 Total de usuarios", f"{len(df_filtrado):,}")
 
@@ -135,6 +170,8 @@ def main() -> None:
         col2.metric("💰 Saldo total", "N/D")
 
     col3.metric("✅ Cuentas verificadas", f"{calcular_porcentaje_verificadas(df_filtrado)} %")
+
+    col4.metric("🚫 Cuentas Limitadas", f"{_contar_limitadas(df_filtrado)}")
 
     st.divider()
 
@@ -210,7 +247,9 @@ def main() -> None:
     st.divider()
     st.subheader("✏️ Editar registro")
 
-    if "Usuario" not in df.columns:
+    if usando_historial:
+        st.info("La edición solo aplica al archivo cuentas.xlsx subido, no al historial (solo lectura).")
+    elif "Usuario" not in df.columns:
         st.info("No hay columna 'Usuario' para seleccionar registros.")
     else:
         # Lista todos los usuarios del DataFrame cargado (no solo los filtrados).

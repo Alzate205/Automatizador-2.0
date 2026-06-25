@@ -84,6 +84,20 @@ async def human_type(page, selector: str, text: str, delay_range=(40, 140)) -> b
     except ERRORES_PW:
         logger.warning(f"No se pudo escribir en: {selector}")
         return False
+    
+async def human_mouse_move(page, steps: int = 8):
+    """Movimiento de mouse más natural"""
+    for _ in range(steps):
+        x = random.randint(100, 1200)
+        y = random.randint(100, 700)
+        await page.mouse.move(x, y, steps=random.randint(3, 8))
+        await human_delay(0.1, 0.4)
+
+async def scroll_humano(page):
+    """Scroll natural"""
+    await page.evaluate("window.scrollBy(0, document.body.scrollHeight * 0.3)")
+    await human_delay(0.8, 2.2)
+    await page.evaluate("window.scrollBy(0, -document.body.scrollHeight * 0.15)")
 
 
 # ==================== PROCESADOR PRINCIPAL ====================
@@ -212,10 +226,24 @@ async def process_user(
                 except ERRORES_PW:
                     pass
 
+            # ---------- Comportamiento humano (mouse + scroll) ----------
+            # No crítico: si falla, no debe tumbar la lectura de datos.
+            try:
+                await human_mouse_move(page)
+                await scroll_humano(page)
+                await human_delay(2, 5)
+            except ERRORES_PW:
+                pass
+
             # ---------- Extraer saldo (utilidad compartida) ----------
             saldo = 0.0
             try:
-                saldo_locator = page.locator("#balance, .balance, .user-balance, text=$").first
+                # CSS + texto combinados con .or_(): mezclar 'text=' dentro de una
+                # lista CSS por comas no es válido en Playwright. El fallback de
+                # texto busca un patrón monetario ("$ 1.234.567"), no un "$" suelto.
+                saldo_locator = page.locator("#balance, .balance, .user-balance").or_(
+                    page.get_by_text(re.compile(r"\$\s*[\d.,]+"))
+                ).first
                 await saldo_locator.wait_for(state="visible", timeout=8000)
                 saldo_text = await saldo_locator.inner_text(timeout=5000)
                 saldo = extraer_saldo(saldo_text)
@@ -224,12 +252,26 @@ async def process_user(
                 logger.warning(f"[{etiqueta}] No se pudo extraer el saldo")
 
             # ---------- Verificación de cuenta ----------
-            verificada = "desconocido"
+            # Selectores más cercanos a Betplay. Combinamos CSS + texto con
+            # .or_(get_by_text(...)) porque mezclar 'text=' dentro de una lista
+            # CSS separada por comas NO es válido en Playwright.
+            verificada = "no"
             try:
-                badge = page.locator(".badge, .verified, .status-verified, text=Verificada")
-                verificada = "si" if await badge.count() > 0 else "no"
+                verificada_loc = page.locator(
+                    ".badge-verified, .verified-badge, .status-success"
+                ).or_(
+                    page.get_by_text(
+                        re.compile(
+                            r"Verificad[ao]|Cuenta verificada|Identidad confirmada",
+                            re.IGNORECASE,
+                        )
+                    )
+                ).first
+                await verificada_loc.wait_for(state="visible", timeout=6000)
+                verificada = "si"
+                logger.info(f"[{etiqueta}] Cuenta verificada: si")
             except ERRORES_PW:
-                pass
+                logger.info(f"[{etiqueta}] Sin insignia de verificación visible (no)")
 
             # ---------- Prueba de límite ----------
             limitada = await _probar_limite(page, base_url, etiqueta)
@@ -283,32 +325,32 @@ async def _obtener_codigo_2fa(
 
 
 async def _probar_limite(page, base_url: str, etiqueta: str) -> bool:
-    """
-    Realiza una apuesta de prueba con un monto alto y evalúa si aparece una
-    alerta de límite (usando restricciones.contiene_restriccion).
-    """
     try:
-        logger.info(f"[{etiqueta}] Probando límite de apuesta...")
-        await page.goto(f"{base_url}/deportes/futbol", wait_until="networkidle", timeout=20000)
+        logger.info(f"[{etiqueta}] Iniciando prueba de límite...")
+        await page.goto(f"{base_url}/deportes/futbol", wait_until="networkidle", timeout=25000)
         await human_delay(3, 6)
 
-        # Abrir un evento popular y una cuota (cualquier número con decimales, p. ej. 1.85).
-        await page.locator("text=/Liga BetPlay|Primera A|Colombia/i").first.click()
+        # Partido popular
+        await page.locator("text=/Liga BetPlay|Primera A|BetPlay Cup/i").first.click()
         await human_delay(2.5, 5)
-        await page.locator("button, div").filter(has_text=re.compile(r"\d+\.\d{2}")).first.click()
+
+        # Seleccionar cualquier cuota
+        await page.locator("button, div").filter(has_text=re.compile(r"\d\.\d{1,2}")).first.click()
         await human_delay(2, 4)
 
-        monto_input = page.locator(
-            'input[placeholder*="onto"], input[name*="stake"], input[type="number"]'
-        ).first
-        await monto_input.fill(MONTO_PRUEBA_LIMITE)
-        await human_delay(1.5, 3)
+        # Monto alto
+        monto_input = page.locator('input[placeholder*="Monto"], input[name*="stake"], input[type="number"]').first
+        await monto_input.fill("10000000")
+        await human_delay(2, 3.5)
 
-        # Leer el texto de la página y detectar palabras de límite (sin tildes).
-        cuerpo = await page.locator("body").inner_text(timeout=5000)
+        # Buscar alerta en toda la página
+        cuerpo = await page.locator("body").inner_text(timeout=8000)
         if contiene_restriccion(cuerpo, PALABRAS_LIMITE_BETPLAY):
-            logger.info(f"[{etiqueta}] ✅ Cuenta detectada como LIMITADA")
+            logger.info(f"[{etiqueta}] ✅ CUENTA LIMITADA DETECTADA")
             return True
+
+        logger.info(f"[{etiqueta}] No se detectó límite")
+        return False
     except ERRORES_PW as e:
-        logger.debug(f"[{etiqueta}] Prueba de límite no concluyente: {e}")
-    return False
+        logger.debug(f"[{etiqueta}] Prueba de límite falló (no crítico): {e}")
+        return False
