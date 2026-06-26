@@ -28,7 +28,7 @@ def encontrar_chrome_exe() -> str:
                     return ruta
             except:
                 continue
-    raise FileNotFoundError("❌ No se encontró Google Chrome. Instálalo o configura la ruta manualmente.")
+    raise FileNotFoundError("No se encontró Google Chrome. Instálalo o configura la ruta manualmente.")
 
 
 def lanzar_perfil_chrome(
@@ -65,14 +65,14 @@ def lanzar_perfil_chrome(
         cmd.append("--headless=new")
 
     try:
-        print(f"🚀 Lanzando perfil {perfil_id} | Puerto: {puerto} | Proxy: {proxy or 'Ninguno'}")
+        print(f"Lanzando perfil {perfil_id} | Puerto: {puerto} | Proxy: {proxy or 'Ninguno'}")
         subprocess.Popen(cmd)
         
         # Espera humana realista
         time.sleep(5 + random.uniform(1.5, 3.5))
         
         endpoint = f"http://127.0.0.1:{puerto}"
-        print(f"✅ Perfil {perfil_id} listo → {endpoint}")
+        print(f"Perfil {perfil_id} listo → {endpoint}")
         return puerto, endpoint
 
     except Exception as e:
@@ -86,6 +86,6 @@ def cerrar_todos_perfiles():
             subprocess.call("taskkill /F /IM chrome.exe /T", shell=True)
         else:
             subprocess.call("pkill -f 'chrome.*remote-debugging-port'", shell=True)
-        print("🧹 Todos los procesos de Chrome han sido cerrados.")
+        print("Todos los procesos de Chrome han sido cerrados.")
     except:
         pass

@@ -83,7 +83,7 @@ def main() -> None:
             notas=f"Prueba local - Perfil {row.get('Puerto', 'N/A')}"
         )
     
-    print(f"✅ {row.get('Usuario')} → Saldo: ${resultado_simulado['saldo']:,.0f} | Verificada: {resultado_simulado['verificada']} | Limitada: {resultado_simulado['limitada']}")
+    print(f"{row.get('Usuario')} → Saldo: ${resultado_simulado['saldo']:,.0f} | Verificada: {resultado_simulado['verificada']} | Limitada: {resultado_simulado['limitada']}")
 
     log.exito("=== Prueba finalizada ===")
 

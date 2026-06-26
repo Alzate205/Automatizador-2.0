@@ -1,0 +1,17 @@
+# Perfiles de Chrome (los genera gestor_perfiles.py; pesados, no versionar)
+perfiles/
+
+# Runtime del bot / dashboard (se regeneran en cada corrida)
+estado_bot.json
+config_run.json
+*.flag
+bot.log
+bot_consola.log
+progreso.txt
+cuentas_actualizadas.xlsx
+historial_auditoria.csv
+
+# Python
+__pycache__/
+*.pyc
+*.pyo

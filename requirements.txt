@@ -2,3 +2,5 @@ pandas
 openpyxl
 playwright
 colorama
+altair 
+streamlit

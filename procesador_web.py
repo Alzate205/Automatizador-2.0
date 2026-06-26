@@ -71,6 +71,7 @@ SELECTORES_VERIFICADA = (
 # --- Punto 9: detección de límite leyendo la página OFICIAL de límites del
 # usuario (más fiable que simular una apuesta). ---
 RUTA_LIMITES = "/menuusuario?optionMenu=1"
+RUTA_BONOS = "/menuusuario?optionMenu=4"
 # Marcadores literales de un tope diario bajo (señal de cuenta limitada).
 # PALABRAS_LIMITE_BETPLAY ya cubre "límite/máximo/...".
 MARCADORES_LIMITE = ("10.000.000", "10000000")
@@ -129,7 +130,12 @@ async def scroll_humano(page):
 
 # ==================== REGISTRO COMPLETO (BETPLAY) ====================
 
-async def registrar_cuenta(page, datos: Dict[str, Any], base_url: str = BASE_URL_POR_DEFECTO) -> bool:
+async def registrar_cuenta(
+    page,
+    datos: Dict[str, Any],
+    base_url: str = BASE_URL_POR_DEFECTO,
+    captcha_waiter: Optional[Callable[[], Awaitable[None]]] = None,
+) -> bool:
     """
     Registro completo con los selectores reales de Betplay.
 
@@ -145,7 +151,10 @@ async def registrar_cuenta(page, datos: Dict[str, Any], base_url: str = BASE_URL
         await page.goto(base_url, wait_until="domcontentloaded", timeout=45000)
         await human_delay(3, 6)
 
-        await page.click("text=/Registrarse|Crear cuenta|Registro/i", timeout=12000)
+        # Boton de registro: selector real de Betplay (.btn-registro) o por texto.
+        await page.locator("button.btn-registro").or_(
+            page.get_by_text(re.compile(r"Registrarse|Crear cuenta|Registro", re.IGNORECASE))
+        ).first.click(timeout=12000)
         await human_delay(3, 5)
 
         # Tipo de documento (se selecciona por etiqueta visible, no por value).
@@ -198,13 +207,17 @@ async def registrar_cuenta(page, datos: Dict[str, Any], base_url: str = BASE_URL
                 pass
 
         # ---------- CAPTCHA MANUAL ----------
-        # Betplay usa reCAPTCHA; no lo resolvemos automáticamente. Pausamos para
-        # que lo resuelvas a mano en la ventana del navegador antes de enviar.
-        logger.warning("⚠️  Si aparece un reCAPTCHA, resuélvelo MANUALMENTE en el navegador.")
-        logger.info(
-            f"Esperando ~{ESPERA_CAPTCHA_SEG[0]}-{ESPERA_CAPTCHA_SEG[1]} s para la resolución manual..."
-        )
-        await human_delay(*ESPERA_CAPTCHA_SEG)
+        # Betplay usa reCAPTCHA; no lo resolvemos automaticamente. Si el dashboard
+        # inyecta un captcha_waiter, esperamos a que el usuario pulse "Continuar";
+        # si no, hacemos una pausa fija como respaldo.
+        logger.warning("Si aparece un reCAPTCHA, resuelvelo MANUALMENTE en el navegador.")
+        if captcha_waiter is not None:
+            await captcha_waiter()
+        else:
+            logger.info(
+                f"Esperando ~{ESPERA_CAPTCHA_SEG[0]}-{ESPERA_CAPTCHA_SEG[1]} s para la resolucion manual..."
+            )
+            await human_delay(*ESPERA_CAPTCHA_SEG)
 
         # Botón final.
         await page.click('button:has-text("Completar Registro"), button[type="submit"]', timeout=15000)
@@ -233,6 +246,7 @@ async def process_user(
     base_url: str = BASE_URL_POR_DEFECTO,
     datos: Optional[Dict[str, Any]] = None,
     modo: str = "login",
+    captcha_waiter: Optional[Callable[[], Awaitable[None]]] = None,
 ) -> Dict[str, Any]:
     """
     Se adjunta a un navegador externo (CDP). Con modo="registro" crea primero la
@@ -278,11 +292,12 @@ async def process_user(
 
             # ---------- Registro (opcional) ----------
             if modo == "registro":
-                if not await registrar_cuenta(page, datos or {}, base_url):
+                if not await registrar_cuenta(page, datos or {}, base_url, captcha_waiter):
                     return {
                         "saldo": 0.0,
                         "verificada": "no",
                         "limitada": False,
+                        "bono": "desconocido",
                         "estado": "fallo_registro",
                         "timestamp": datetime.now().isoformat(),
                     }
@@ -338,7 +353,7 @@ async def process_user(
                 pass  # esta cuenta no pidió 2FA
 
             if hay_2fa:
-                logger.info(f"[{etiqueta}] 🔐 Campo de verificación 2FA detectado")
+                logger.info(f"[{etiqueta}] Campo de verificación 2FA detectado")
                 await human_delay(2, 4)
                 codigo = await _obtener_codigo_2fa(verification_code, code_provider, etiqueta)
                 if codigo:
@@ -376,12 +391,16 @@ async def process_user(
             # ---------- Prueba de límite (Punto 9) ----------
             limitada = await probar_limite(page, base_url, etiqueta)
 
+            # ---------- Bonos ----------
+            bono = await verificar_bonos(page, base_url, etiqueta)
+
             return {
                 "saldo": info["saldo"],
                 "verificada": info["verificada"],
                 "limitada": limitada,
-                # Umbral de negocio: una cuenta con saldo > 1000 (COP) se da por buena.
-                "estado": "exitosa" if info["saldo"] > 1000 else "revisar",
+                "bono": bono,
+                # Umbral de negocio: una cuenta con saldo > 500 (COP) se da por buena.
+                "estado": "exitosa" if info["saldo"] > 500 else "revisar",
                 "timestamp": datetime.now().isoformat(),
             }
 
@@ -391,6 +410,7 @@ async def process_user(
             "saldo": 0.0,
             "verificada": "error",
             "limitada": False,
+            "bono": "Error bonos",
             "estado": "error",
             "timestamp": datetime.now().isoformat(),
         }
@@ -486,3 +506,22 @@ async def probar_limite(page, base_url: str, etiqueta: str) -> bool:
     except ERRORES_PW as e:
         logger.debug(f"[{etiqueta}] Prueba de límite no concluyente: {e}")
         return False
+
+
+async def verificar_bonos(page, base_url: str, etiqueta: str) -> str:
+    """
+    Revisa la página de bonos del usuario (RUTA_BONOS). Devuelve 'Tiene Bono',
+    'Sin bonos', o 'Error bonos' si no se pudo consultar.
+    """
+    try:
+        logger.info(f"[{etiqueta}] Revisando bonos del usuario...")
+        await page.goto(f"{base_url}{RUTA_BONOS}", wait_until="networkidle", timeout=20000)
+        await human_delay(3, 5)
+        texto = await page.locator("body").inner_text(timeout=10000)
+        if "Bono Activo" in texto or "Bono Pendiente" in texto:
+            logger.info(f"[{etiqueta}] Bono detectado")
+            return "Tiene Bono"
+        return "Sin bonos"
+    except ERRORES_PW as e:
+        logger.debug(f"[{etiqueta}] No se pudo verificar bonos: {e}")
+        return "Error bonos"

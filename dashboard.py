@@ -2,20 +2,21 @@
 dashboard.py
 ============
 
-Interfaz gráfica local (Dashboard) con Streamlit para administrar y visualizar
-el inventario de registros de auditoría (cuentas.xlsx).
+Panel de control + visor del Automatizador Betplay (Streamlit).
 
-Funciones:
-    1. Carga de datos vía st.file_uploader.
-    2. Panel de métricas (st.metric): total de usuarios, suma de 'Saldo' y
-       % de cuentas verificadas.
-    3. Buscador (por 'Usuario' o 'Correo') + filtro por 'Estado'.
-    4. Exportación de la tabla filtrada a CSV o Excel.
+Permite manejar TODO el bot desde el navegador:
+  - Pestana "Cuentas": editar/crear la lista de cuentas (login o registro).
+  - Pestana "Control": Iniciar / Detener / Continuar (CAPTCHA) y ver el progreso
+    en vivo (estado, cuenta actual, log) mientras el bot corre como proceso aparte.
+  - Pestana "Resultados": metricas, graficos y exportacion de los resultados.
 
-Instalación:
-    pip install streamlit pandas openpyxl
+El bot (main.py) se lanza como subproceso y se comunica con este panel por
+archivos (ver control.py): estado_bot.json, config_run.json, senales y bot.log.
 
-Ejecución (abre el navegador automáticamente en http://localhost:8501):
+Instalacion:
+    pip install streamlit pandas openpyxl altair
+
+Ejecucion:
     streamlit run dashboard.py
 """
 
@@ -23,304 +24,348 @@ from __future__ import annotations
 
 import io
 import os
+import subprocess
+import sys
+import time
 
 import altair as alt
 import pandas as pd
 import streamlit as st
 
-# Columnas que contienen datos sensibles: se ocultan por defecto en la vista.
-COLUMNAS_SENSIBLES = ["Password"]
+import control
 
-# Ruta del Excel local donde se persisten las ediciones.
+# Archivos del proyecto.
 RUTA_EXCEL = "cuentas.xlsx"
-
-# Cargar preferentemente el historial de auditoría
+RUTA_RESULTADOS = "cuentas_actualizadas.xlsx"
 RUTA_HISTORIAL = "historial_auditoria.csv"
+LOG_CONSOLA = "bot_consola.log"
 
-@st.cache_data(show_spinner=False)
-def cargar_historial() -> pd.DataFrame:
-    """Carga historial_auditoria.csv si existe; si no, DataFrame vacío."""
-    if os.path.exists(RUTA_HISTORIAL):
+# Columnas sensibles (se pueden ocultar en la vista de resultados).
+COLUMNAS_SENSIBLES = ["Password", "ClaveCorreo"]
+
+# Esquema base para crear una lista de cuentas desde cero.
+COLUMNAS_PLANTILLA = [
+    "Usuario", "Password", "Nombre", "Correo", "ClaveCorreo", "Puerto", "Modo",
+    "Cedula", "PrimerNombre", "PrimerApellido", "Telefono",
+]
+
+
+# ---------------------------------------------------------------------------
+# UTILIDADES DE DATOS
+# ---------------------------------------------------------------------------
+
+def leer_excel(ruta: str) -> pd.DataFrame:
+    """Lee un Excel local; DataFrame vacio si no existe o falla."""
+    if not os.path.exists(ruta):
+        return pd.DataFrame()
+    try:
+        return pd.read_excel(ruta)
+    except Exception:  # noqa: BLE001
+        return pd.DataFrame()
+
+
+def leer_historial() -> pd.DataFrame:
+    if not os.path.exists(RUTA_HISTORIAL):
+        return pd.DataFrame()
+    try:
         return pd.read_csv(RUTA_HISTORIAL)
-    return pd.DataFrame()
+    except Exception:  # noqa: BLE001
+        return pd.DataFrame()
 
 
-# ---------------------------------------------------------------------------
-# UTILIDADES
-# ---------------------------------------------------------------------------
-
-@st.cache_data(show_spinner=False)
-def cargar_excel(contenido: bytes) -> pd.DataFrame:
-    """Lee el Excel cargado (en bytes) y devuelve un DataFrame."""
-    return pd.read_excel(io.BytesIO(contenido))
-
-
-def calcular_porcentaje_verificadas(df: pd.DataFrame) -> float:
-    """Devuelve el % de filas con Verificada == 'si' (sin distinguir mayúsculas)."""
+def porcentaje_verificadas(df: pd.DataFrame) -> float:
     if "Verificada" not in df.columns or len(df) == 0:
         return 0.0
-    verificadas = df["Verificada"].astype(str).str.strip().str.lower().eq("si").sum()
-    return round(verificadas / len(df) * 100, 1)
+    ver = df["Verificada"].astype(str).str.strip().str.lower().eq("si").sum()
+    return round(ver / len(df) * 100, 1)
 
 
-def _contar_limitadas(df: pd.DataFrame) -> int:
-    """Cuenta filas con Limitada verdadero, tolerando bool o texto (True/si/1)."""
+def contar_limitadas(df: pd.DataFrame) -> int:
     if "Limitada" not in df.columns:
         return 0
     valores = df["Limitada"].astype(str).str.strip().str.lower()
-    return int(valores.isin(["true", "si", "sí", "1", "limitada"]).sum())
+    return int(valores.isin(["true", "si", "1", "limitada"]).sum())
 
 
 def to_excel_bytes(df: pd.DataFrame) -> bytes:
-    """Serializa un DataFrame a bytes de Excel para el botón de descarga."""
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="Auditoria")
+        df.to_excel(writer, index=False, sheet_name="Resultados")
     return buffer.getvalue()
 
 
+def cola_log(ruta: str, n: int = 40) -> str:
+    """Devuelve las ultimas n lineas de un log de texto."""
+    if not os.path.exists(ruta):
+        return ""
+    try:
+        with open(ruta, encoding="utf-8", errors="replace") as f:
+            return "".join(f.readlines()[-n:])
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 # ---------------------------------------------------------------------------
-# INTERFAZ
+# CONTROL DEL BOT (subproceso)
 # ---------------------------------------------------------------------------
 
-def main() -> None:
-    st.set_page_config(page_title="Auditoría — Dashboard", page_icon="📊", layout="wide")
-    st.title("📊 Dashboard de Auditoría de Cuentas")
-    st.caption("Visualiza el archivo cuentas.xlsx subido o el historial de auditoría.")
+def bot_proceso_vivo() -> bool:
+    proc = st.session_state.get("bot_proc")
+    return proc is not None and proc.poll() is None
 
-    # --- 1) Fuente de datos --------------------------------------------------
-    fuente = st.radio(
-        "Fuente de datos",
-        ["Archivo subido (cuentas.xlsx)", "Historial de auditoría (historial_auditoria.csv)"],
-        horizontal=True,
+
+def bot_activo(estado: dict) -> bool:
+    """True si el bot esta trabajando (por estado publicado o proceso vivo)."""
+    return estado.get("estado") in ("corriendo", "esperando_captcha") or bot_proceso_vivo()
+
+
+def iniciar_bot(config: dict) -> None:
+    control.escribir_config(config)
+    control.reset_control()
+    control.escribir_estado(estado="corriendo", mensaje="Lanzando bot...", indice=0, total=0, resumen={})
+    salida = open(LOG_CONSOLA, "a", encoding="utf-8")
+    proc = subprocess.Popen(
+        [sys.executable, "main.py"],
+        stdout=salida,
+        stderr=subprocess.STDOUT,
     )
-    usando_historial = fuente.startswith("Historial")
+    st.session_state.bot_proc = proc
 
-    if usando_historial:
-        # Vista de SOLO LECTURA del historial generado por el auditor.
-        df = cargar_historial()
-        if df.empty:
-            st.info(
-                "No hay historial todavía. Ejecuta el auditor para generar "
-                "historial_auditoria.csv."
-            )
-            return
-        st.caption(f"📜 Mostrando el historial de auditoría: {len(df)} registro(s).")
-    else:
-        archivo = st.file_uploader("Cargar archivo Excel (cuentas.xlsx)", type=["xlsx"])
-        if archivo is None:
-            st.info("Esperando que cargues un archivo .xlsx para mostrar el panel.")
-            return
 
-        # Carga el archivo a session_state UNA sola vez por archivo subido. Así las
-        # ediciones posteriores persisten entre reruns y no las pisa la caché.
-        file_id = f"{archivo.name}:{len(archivo.getvalue())}"
-        if st.session_state.get("file_id") != file_id:
-            try:
-                st.session_state.df = cargar_excel(archivo.getvalue())
-            except Exception as exc:  # noqa: BLE001
-                st.error(f"No se pudo leer el archivo: {exc}")
-                return
-            st.session_state.file_id = file_id
+def detener_bot() -> None:
+    control.pedir_detener()
 
-        df = st.session_state.df
-        if df.empty:
-            st.warning("El archivo se cargó pero no contiene filas.")
-            return
 
-    # --- 2) Buscador y filtros (se aplican a métricas, gráficos y tabla) -----
-    st.subheader("Buscar y filtrar")
+def forzar_parada() -> None:
+    control.pedir_detener()
+    proc = st.session_state.get("bot_proc")
+    if proc is not None and proc.poll() is None:
+        proc.terminate()
+
+
+# ---------------------------------------------------------------------------
+# PESTANA: CUENTAS
+# ---------------------------------------------------------------------------
+
+def tab_cuentas() -> None:
+    st.subheader("Lista de cuentas")
+    st.caption(
+        "Edita o crea cuentas. Marca 'Modo' = registro para CREAR una cuenta "
+        "(rellena Cedula, PrimerNombre, etc.) o 'Modo' = login para verificar una existente."
+    )
+
+    df = leer_excel(RUTA_EXCEL)
+    if df.empty:
+        df = pd.DataFrame(columns=COLUMNAS_PLANTILLA)
+
+    editado = st.data_editor(df, num_rows="dynamic", width="stretch", key="editor_cuentas")
+
+    if st.button("Guardar cuentas", type="primary"):
+        try:
+            editado.to_excel(RUTA_EXCEL, index=False)
+            st.success(f"Guardado {RUTA_EXCEL} ({len(editado)} cuenta(s)).")
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"No se pudo guardar: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# PESTANA: CONTROL
+# ---------------------------------------------------------------------------
+
+def tab_control() -> None:
+    estado = control.leer_estado()
+    activo = bot_activo(estado)
+
+    st.subheader("Control del bot")
+
+    # --- Configuracion de la corrida ---
+    with st.expander("Configuracion de la corrida", expanded=not activo):
+        c1, c2, c3 = st.columns(3)
+        filtro = c1.selectbox("Que ejecutar", ["todo", "login", "registro"], index=0)
+        usar_gestor = c2.toggle("Lanzar Chrome por cuenta (gestor_perfiles)", value=True)
+        c3.write("")
+        p1, p2 = st.columns(2)
+        pausa_min = p1.number_input("Pausa min (min)", min_value=0.0, value=4.0, step=0.5)
+        pausa_max = p2.number_input("Pausa max (min)", min_value=0.0, value=12.0, step=0.5)
+
+    # --- Botones de control ---
+    b1, b2, b3 = st.columns(3)
+    if b1.button("Iniciar", type="primary", disabled=activo):
+        iniciar_bot({
+            "filtro_modo": filtro,
+            "usar_gestor": bool(usar_gestor),
+            "pausa_min": float(pausa_min),
+            "pausa_max": float(pausa_max),
+        })
+        st.rerun()
+
+    if b2.button("Detener (al terminar la cuenta)", disabled=not activo):
+        detener_bot()
+        st.warning("Detencion solicitada; el bot parara al terminar la cuenta actual.")
+
+    esperando_captcha = estado.get("estado") == "esperando_captcha"
+    if b3.button("Continuar (CAPTCHA resuelto)", type="primary", disabled=not esperando_captcha):
+        control.pedir_continuar()
+        st.success("Senal enviada; el bot continuara el registro.")
+
+    if st.button("Forzar parada", disabled=not bot_proceso_vivo()):
+        forzar_parada()
+        st.warning("Proceso terminado a la fuerza.")
+
+    st.divider()
+
+    # --- Estado en vivo ---
+    st.subheader("Estado en vivo")
+    if esperando_captcha:
+        st.warning("El bot espera que resuelvas el reCAPTCHA en el navegador. "
+                   "Cuando termines, pulsa 'Continuar (CAPTCHA resuelto)'.")
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Estado", estado.get("estado", "inactivo"))
+    total = int(estado.get("total", 0) or 0)
+    indice = int(estado.get("indice", 0) or 0)
+    m2.metric("Progreso", f"{indice + 1 if total else 0}/{total}")
+    m3.metric("Cuenta actual", str(estado.get("cuenta", "") or "-"))
+
+    if total:
+        st.progress(min((indice + 1) / total, 1.0))
+
+    st.caption(f"Fase: {estado.get('fase', '-')} | {estado.get('mensaje', '')}")
+
+    resumen = estado.get("resumen") or {}
+    if resumen:
+        st.write("Resumen:", "  ".join(f"{k}={v}" for k, v in sorted(resumen.items())))
+
+    with st.expander("Log del bot (bot.log)", expanded=True):
+        st.code(cola_log(control.LOG_BOT, 40) or "(sin log todavia)", language="text")
+    consola = cola_log(LOG_CONSOLA, 15)
+    if consola and not bot_proceso_vivo() and estado.get("estado") not in ("finalizado", "detenido"):
+        with st.expander("Salida de consola del bot (posible error de arranque)"):
+            st.code(consola, language="text")
+
+    # --- Auto-refresco mientras el bot trabaja ---
+    auto = st.toggle("Auto-refrescar (cada 3 s)", value=True)
+    if auto and bot_activo(estado):
+        time.sleep(3)
+        st.rerun()
+
+
+# ---------------------------------------------------------------------------
+# PESTANA: RESULTADOS
+# ---------------------------------------------------------------------------
+
+def tab_resultados() -> None:
+    st.subheader("Resultados")
+
+    fuentes = {
+        "Resultados del bot (cuentas_actualizadas.xlsx)": ("excel", RUTA_RESULTADOS),
+        "Historial (historial_auditoria.csv)": ("csv", RUTA_HISTORIAL),
+        "Cuentas (cuentas.xlsx)": ("excel", RUTA_EXCEL),
+    }
+    eleccion = st.selectbox("Fuente de datos", list(fuentes.keys()))
+    tipo, ruta = fuentes[eleccion]
+    df = leer_historial() if tipo == "csv" else leer_excel(ruta)
+
+    if df.empty:
+        st.info("No hay datos en esa fuente todavia.")
+        return
+
+    # Filtros.
     f1, f2 = st.columns([2, 1])
-
-    busqueda = f1.text_input("🔍 Buscar por Usuario o Correo", placeholder="Escribe para filtrar...")
-
+    busqueda = f1.text_input("Buscar por Usuario o Correo", placeholder="Escribe para filtrar...")
     estados = ["Todos"]
     if "Estado" in df.columns:
         estados += sorted(df["Estado"].dropna().astype(str).unique().tolist())
     estado_sel = f2.selectbox("Filtrar por Estado", estados)
 
-    # Aplica los filtros sobre una copia. Todo lo que sigue (métricas, gráficos
-    # y tabla) usa este df_filtrado, así que se recalcula al cambiar el filtro.
-    df_filtrado = df.copy()
-
+    df_f = df.copy()
     if busqueda:
         texto = busqueda.strip().lower()
-        mask = pd.Series(False, index=df_filtrado.index)
+        mask = pd.Series(False, index=df_f.index)
         for col in ("Usuario", "Correo"):
-            if col in df_filtrado.columns:
-                mask |= df_filtrado[col].astype(str).str.lower().str.contains(texto, na=False)
-        df_filtrado = df_filtrado[mask]
+            if col in df_f.columns:
+                mask |= df_f[col].astype(str).str.lower().str.contains(texto, na=False)
+        df_f = df_f[mask]
+    if estado_sel != "Todos" and "Estado" in df_f.columns:
+        df_f = df_f[df_f["Estado"].astype(str) == estado_sel]
 
-    if estado_sel != "Todos" and "Estado" in df_filtrado.columns:
-        df_filtrado = df_filtrado[df_filtrado["Estado"].astype(str) == estado_sel]
-
-    st.caption(f"Filtro activo: **{len(df_filtrado)}** de **{len(df)}** registros.")
-    st.divider()
-
-    # --- 3) Panel de métricas (sobre los datos filtrados) -------------------
-    st.subheader("Resumen")
-    col1, col2, col3, col4 = st.columns(4)
-
-    col1.metric("👥 Total de usuarios", f"{len(df_filtrado):,}")
-
-    if "Saldo" in df_filtrado.columns:
-        saldo_total = pd.to_numeric(df_filtrado["Saldo"], errors="coerce").fillna(0).sum()
-        col2.metric("💰 Saldo total", f"{saldo_total:,.2f}")
+    # Metricas.
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Total", f"{len(df_f):,}")
+    if "Saldo" in df_f.columns:
+        total_saldo = pd.to_numeric(df_f["Saldo"], errors="coerce").fillna(0).sum()
+        c2.metric("Saldo total", f"{total_saldo:,.2f}")
     else:
-        col2.metric("💰 Saldo total", "N/D")
-
-    col3.metric("✅ Cuentas verificadas", f"{calcular_porcentaje_verificadas(df_filtrado)} %")
-
-    col4.metric("🚫 Cuentas Limitadas", f"{_contar_limitadas(df_filtrado)}")
+        c2.metric("Saldo total", "N/D")
+    c3.metric("Verificadas", f"{porcentaje_verificadas(df_f)} %")
+    c4.metric("Limitadas", f"{contar_limitadas(df_f)}")
 
     st.divider()
 
-    # --- 4) Análisis gráfico (reacciona a los filtros) ----------------------
-    st.subheader("Análisis gráfico")
+    # Graficos.
     g1, g2 = st.columns(2)
-
     with g1:
-        st.markdown("**Saldo total por Estado**")
-        if {"Estado", "Saldo"} <= set(df_filtrado.columns) and not df_filtrado.empty:
-            tmp = df_filtrado.copy()
+        st.markdown("**Saldo por Estado**")
+        if {"Estado", "Saldo"} <= set(df_f.columns) and not df_f.empty:
+            tmp = df_f.copy()
             tmp["Saldo"] = pd.to_numeric(tmp["Saldo"], errors="coerce").fillna(0)
-            saldo_por_estado = (
-                tmp.groupby("Estado")["Saldo"].sum().sort_values(ascending=False)
-            )
-            st.bar_chart(saldo_por_estado)
+            st.bar_chart(tmp.groupby("Estado")["Saldo"].sum().sort_values(ascending=False),
+                         width="stretch")
         else:
-            st.info("Sin datos suficientes (faltan 'Estado'/'Saldo' o no hay filas).")
-
+            st.info("Faltan columnas 'Estado'/'Saldo'.")
     with g2:
-        st.markdown("**Cuentas verificadas vs. no verificadas**")
-        if "Verificada" in df_filtrado.columns and not df_filtrado.empty:
+        st.markdown("**Verificadas vs no verificadas**")
+        if "Verificada" in df_f.columns and not df_f.empty:
             etiquetas = (
-                df_filtrado["Verificada"].astype(str).str.strip().str.lower()
+                df_f["Verificada"].astype(str).str.strip().str.lower()
                 .map({"si": "Verificada"}).fillna("No verificada")
             )
-            # DataFrame con dos columnas (Categoria, Cantidad) para Altair.
-            conteo = (
-                etiquetas.value_counts()
-                .rename_axis("Categoria")
-                .reset_index(name="Cantidad")
-            )
-
-            # Dona: mark_arc con innerRadius > 0 deja el centro vacío.
+            conteo = etiquetas.value_counts().rename_axis("Categoria").reset_index(name="Cantidad")
             dona = (
                 alt.Chart(conteo)
                 .mark_arc(innerRadius=70)
                 .encode(
                     theta=alt.Theta("Cantidad:Q", stack=True),
-                    color=alt.Color(
-                        "Categoria:N",
-                        scale=alt.Scale(
-                            domain=["Verificada", "No verificada"],
-                            range=["#2ecc71", "#e57373"],  # verde / rojo claro
-                        ),
-                        legend=alt.Legend(title="Verificación"),
-                    ),
-                    tooltip=[
-                        alt.Tooltip("Categoria:N", title="Categoría"),
-                        alt.Tooltip("Cantidad:Q", title="Cuentas"),
-                    ],
+                    color=alt.Color("Categoria:N", scale=alt.Scale(
+                        domain=["Verificada", "No verificada"], range=["#2ecc71", "#e57373"])),
+                    tooltip=["Categoria:N", "Cantidad:Q"],
                 )
             )
-            st.altair_chart(dona, use_container_width=True)
+            st.altair_chart(dona, width="stretch")
         else:
-            st.info("Sin datos suficientes (falta 'Verificada' o no hay filas).")
+            st.info("Falta la columna 'Verificada'.")
 
     st.divider()
 
-    # --- 5) Tabla de detalle -------------------------------------------------
-    # Oculta columnas sensibles salvo que el usuario lo active explícitamente.
-    mostrar_sensibles = st.toggle("Mostrar columnas sensibles (Password)", value=False)
-    columnas_vista = [
-        c for c in df_filtrado.columns
-        if mostrar_sensibles or c not in COLUMNAS_SENSIBLES
-    ]
-    df_vista = df_filtrado[columnas_vista]
+    # Tabla + exportacion.
+    mostrar_sensibles = st.toggle("Mostrar columnas sensibles", value=False)
+    columnas = [c for c in df_f.columns if mostrar_sensibles or c not in COLUMNAS_SENSIBLES]
+    vista = df_f[columnas]
+    st.dataframe(vista, width="stretch", hide_index=True)
 
-    st.write(f"Mostrando **{len(df_vista)}** de **{len(df)}** registros.")
-    st.dataframe(df_vista, use_container_width=True, hide_index=True)
-
-    # --- 5b) Edición de registros (persiste en el Excel local) --------------
-    st.divider()
-    st.subheader("✏️ Editar registro")
-
-    if usando_historial:
-        st.info("La edición solo aplica al archivo cuentas.xlsx subido, no al historial (solo lectura).")
-    elif "Usuario" not in df.columns:
-        st.info("No hay columna 'Usuario' para seleccionar registros.")
-    else:
-        # Lista todos los usuarios del DataFrame cargado (no solo los filtrados).
-        usuarios = df["Usuario"].astype(str).tolist()
-        usuario_sel = st.selectbox("Selecciona un usuario para modificar", usuarios)
-
-        # Localiza la fila (primera coincidencia si hubiera usuarios repetidos).
-        idx = df.index[df["Usuario"].astype(str) == usuario_sel][0]
-        fila = df.loc[idx]
-
-        with st.form("form_edicion"):
-            # Saldo: precargado y convertido a float de forma segura.
-            saldo_actual = pd.to_numeric(
-                pd.Series([fila.get("Saldo", 0.0)]), errors="coerce"
-            ).fillna(0.0).iloc[0]
-            nuevo_saldo = st.number_input(
-                "Saldo", value=float(saldo_actual), step=1.0, format="%.2f"
-            )
-
-            # Verificada: selector si/no, precargado con el valor actual.
-            opciones_ver = ["si", "no"]
-            ver_actual = str(fila.get("Verificada", "no")).strip().lower()
-            idx_ver = opciones_ver.index(ver_actual) if ver_actual in opciones_ver else 1
-            nueva_ver = st.selectbox("Verificada", opciones_ver, index=idx_ver)
-
-            # Estado / nota de control: opciones base + el valor actual si no está.
-            opciones_estado = ["Activa", "Limitada", "Revisar", "pendiente"]
-            estado_actual = str(fila.get("Estado", "")).strip()
-            if estado_actual and estado_actual not in opciones_estado:
-                opciones_estado = [estado_actual] + opciones_estado
-            idx_est = (
-                opciones_estado.index(estado_actual)
-                if estado_actual in opciones_estado else 0
-            )
-            nuevo_estado = st.selectbox("Estado", opciones_estado, index=idx_est)
-
-            guardar = st.form_submit_button("💾 Guardar Cambios")
-
-        if guardar:
-            # 1) Modifica la fila en el DataFrame en memoria (session_state).
-            st.session_state.df.loc[idx, "Saldo"] = nuevo_saldo
-            st.session_state.df.loc[idx, "Verificada"] = nueva_ver
-            st.session_state.df.loc[idx, "Estado"] = nuevo_estado
-
-            # 2) Guarda el DataFrame de regreso en el Excel local.
-            try:
-                st.session_state.df.to_excel(RUTA_EXCEL, index=False)
-            except Exception as exc:  # noqa: BLE001
-                st.error(f"No se pudo guardar el Excel: {exc}")
-            else:
-                # 3) Éxito + rerun: métricas y gráficos se recalculan al instante.
-                st.success("Registro actualizado correctamente")
-                st.rerun()
-
-    # --- 6) Exportación ------------------------------------------------------
-    st.subheader("Exportar tabla filtrada")
     e1, e2 = st.columns(2)
+    e1.download_button("Descargar CSV", vista.to_csv(index=False).encode("utf-8-sig"),
+                       "resultados.csv", "text/csv")
+    e2.download_button("Descargar Excel", to_excel_bytes(vista),
+                       "resultados.xlsx",
+                       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-    e1.download_button(
-        label="⬇️ Descargar CSV",
-        data=df_vista.to_csv(index=False).encode("utf-8-sig"),
-        file_name="auditoria_filtrada.csv",
-        mime="text/csv",
-    )
 
-    e2.download_button(
-        label="⬇️ Descargar Excel",
-        data=to_excel_bytes(df_vista),
-        file_name="auditoria_filtrada.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
+# ---------------------------------------------------------------------------
+# APP
+# ---------------------------------------------------------------------------
+
+def main() -> None:
+    st.set_page_config(page_title="Automatizador Betplay", layout="wide")
+    st.title("Automatizador Betplay - Panel de control")
+
+    t1, t2, t3 = st.tabs(["Cuentas", "Control", "Resultados"])
+    with t1:
+        tab_cuentas()
+    with t2:
+        tab_control()
+    with t3:
+        tab_resultados()
 
 
 if __name__ == "__main__":
