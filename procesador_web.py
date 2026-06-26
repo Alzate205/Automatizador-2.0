@@ -10,9 +10,10 @@ Reutiliza las utilidades del proyecto en vez de reimplementarlas:
     - restricciones.contiene_restriccion -> detección de límites sin tildes
     - pausa.pausa_con_jitter          -> esperas cortas variables (human_delay)
 
-Mantiene la robustez de la versión previa (base_url configurable, huella es-CO,
-movimiento de mouse, espera post-login, logging por etapa, manejo de errores
-tipado, selectores con alternancia regex y `.first` para modo estricto).
+Mantiene la robustez previa (base_url configurable, huella es-CO, movimiento de
+mouse, espera post-login, logging por etapa, errores tipados, selectores con
+alternancia regex y `.first` para modo estricto) e incluye registro con pausa
+manual de reCAPTCHA y detección de límite por la página oficial del usuario.
 
 Devuelve un dict: {saldo, verificada, limitada, estado, timestamp}.
 """
@@ -41,7 +42,6 @@ ERRORES_PW = (PlaywrightTimeout, PlaywrightError)
 
 # Configuración del sitio objetivo.
 BASE_URL_POR_DEFECTO = "https://www.betplay.com.co"
-MONTO_PRUEBA_LIMITE = "8000000"  # monto alto para forzar (si aplica) la alerta de límite
 
 # Pausa (segundos, rango aleatorio) para resolver el reCAPTCHA MANUALMENTE en el
 # navegador durante el registro. Ajústalo según el tiempo que necesites.
@@ -57,9 +57,10 @@ PALABRAS_LIMITE_BETPLAY = (
 )
 
 # --- Punto 6: selectores candidatos (de más específico a más amplio). Se unen
-# en una sola lista CSS y se combinan con get_by_text vía .or_() ---
+# en una sola lista CSS y se combinan con get_by_text vía .or_().
+# 'td.balance-td' es el selector real visto en la captura del usuario. ---
 SELECTORES_SALDO = (
-    "#balance, .balance-amount, .user-balance, .saldo, .balance, "
+    "td.balance-td, #balance, .balance-amount, .user-balance, .saldo, .balance, "
     '[class*="balance"], [data-testid*="balance"]'
 )
 SELECTORES_VERIFICADA = (
@@ -67,8 +68,12 @@ SELECTORES_VERIFICADA = (
     '[class*="verified"], [data-testid*="verified"]'
 )
 
-# --- Punto 9: ligas/eventos populares para abrir un mercado en la prueba de límite ---
-LIGAS_LIMITE_REGEX = r"Liga BetPlay|Primera A|BetPlay Cup|Colombia"
+# --- Punto 9: detección de límite leyendo la página OFICIAL de límites del
+# usuario (más fiable que simular una apuesta). ---
+RUTA_LIMITES = "/menuusuario?optionMenu=1"
+# Marcadores literales de un tope diario bajo (señal de cuenta limitada).
+# PALABRAS_LIMITE_BETPLAY ya cubre "límite/máximo/...".
+MARCADORES_LIMITE = ("10.000.000", "10000000")
 
 
 # ==================== COMPORTAMIENTO HUMANO ====================
@@ -104,17 +109,19 @@ async def human_type(page, selector: str, text: str, delay_range=(40, 140)) -> b
     except ERRORES_PW:
         logger.warning(f"No se pudo escribir en: {selector}")
         return False
-    
+
+
 async def human_mouse_move(page, steps: int = 8):
-    """Movimiento de mouse más natural"""
+    """Movimiento de mouse más natural."""
     for _ in range(steps):
         x = random.randint(100, 1200)
         y = random.randint(100, 700)
         await page.mouse.move(x, y, steps=random.randint(3, 8))
         await human_delay(0.1, 0.4)
 
+
 async def scroll_humano(page):
-    """Scroll natural"""
+    """Scroll natural."""
     await page.evaluate("window.scrollBy(0, document.body.scrollHeight * 0.3)")
     await human_delay(0.8, 2.2)
     await page.evaluate("window.scrollBy(0, -document.body.scrollHeight * 0.15)")
@@ -287,7 +294,7 @@ async def process_user(
             await page.mouse.move(random.randint(100, 800), random.randint(100, 500))
             await human_delay(1, 2.5)
 
-            # ---------- Login / Registro ----------
+            # ---------- Login ----------
             try:
                 await page.click(
                     "text=/Iniciar sesión|Registrarse|Crear cuenta|Registro|Sign up/i",
@@ -299,13 +306,13 @@ async def process_user(
 
             if await human_type(
                 page,
-                'input[name*="email"], input#email, input[placeholder*="orreo"], input[placeholder*="mail"]',
+                'input[name*="email" i], input#email, input[placeholder*="correo" i], input[placeholder*="mail" i]',
                 username,
             ):
                 await human_delay(1, 2)
                 await human_type(
                     page,
-                    'input[name*="password"], input#password, input[placeholder*="ontraseña"]',
+                    'input[name*="password" i], input#password, input[placeholder*="contraseña" i]',
                     password,
                 )
                 await human_delay(1, 2.5)
@@ -324,7 +331,7 @@ async def process_user(
             hay_2fa = False
             try:
                 await page.locator(
-                    'input[placeholder*="ódigo"], #verification-code, #code, input[name*="code"]'
+                    'input[placeholder*="código" i], #verification-code, #code, input[name*="code" i]'
                 ).first.wait_for(state="visible", timeout=8000)
                 hay_2fa = True
             except ERRORES_PW:
@@ -337,7 +344,7 @@ async def process_user(
                 if codigo:
                     await human_type(
                         page,
-                        'input[placeholder*="ódigo"], #verification-code, #code',
+                        'input[placeholder*="código" i], #verification-code, #code',
                         codigo,
                     )
                     await page.keyboard.press("Enter")
@@ -363,128 +370,18 @@ async def process_user(
             except ERRORES_PW:
                 pass
 
-            # ==================== PUNTO 6: SALDO + VERIFICADA (MEJORADO) ====================
-            async def extraer_info_cuenta(page) -> Dict[str, Any]:
-                saldo = 0.0
-                verificada = "desconocido"
+            # ---------- Saldo + Verificación (Punto 6) ----------
+            info = await extraer_info_cuenta(page, etiqueta)
 
-                try:
-                    # Saldo principal (el más confiable según tu captura)
-                    saldo_selectors = [
-                        'td.balance-td',                    # ← Exacto de tu captura
-                        '.balance-amount', 
-                        '[class*="balance"]',
-                        'text=Saldo:',
-                        'text=$', 
-                        '.user-balance'
-                    ]
-                    
-                    for selector in saldo_selectors:
-                        try:
-                            elem = page.locator(selector).first
-                            await elem.wait_for(state="visible", timeout=8000)
-                            texto = await elem.inner_text(timeout=5000)
-                            
-                            # Limpieza para formato colombiano (0,3 → 0.3)
-                            clean = texto.replace(',', '.').replace('$', '').strip()
-                            if clean.replace('.', '').replace(',', '').isdigit():
-                                saldo = float(clean)
-                                log.info(f"✅ Saldo extraído: ${saldo:,.2f}")
-                                break
-                        except:
-                            continue
-                except Exception as e:
-                    log.warning(f"Error extrayendo saldo: {e}")
-
-                # Verificada (busca badge o texto)
-                try:
-                    if await page.locator('text=Verificada|Verificado|Identidad confirmada|.verified').count() > 0:
-                        verificada = "si"
-                except:
-                    pass
-
-                return {"saldo": saldo, "verificada": verificada}
-
-
-            # ==================== PUNTO 9: PRUEBA DE LÍMITE (MEJORADO) ====================
-            async def probar_limite(page) -> bool:
-                """
-                Verifica si la cuenta está limitada yendo directamente a la página oficial.
-                """
-                try:
-                    log.info("🔍 Revisando límites oficiales del usuario...")
-                    
-                    await page.goto("https://www.betplay.com.co/menuusuario?optionMenu=1", 
-                                wait_until="networkidle", timeout=20000)
-                    
-                    await pausa_humana(3, 5)
-
-                    # Extraer todo el texto visible de la página
-                    page_text = await page.locator("body").inner_text(timeout=10000)
-                    
-                    # Palabras clave que indican límites bajos / cuenta limitada
-                    palabras_limitantes = ["10.000.000", "10000000", "$10.000.000", 
-                                        "Límite Diario", "bajo", "restringido", "limitado"]
-                    
-                    limitada = any(palabra.lower() in page_text.lower() for palabra in palabras_limitantes)
-
-                    if limitada:
-                        log.info("🚫 CUENTA LIMITADA DETECTADA (Límite Diario bajo)")
-                        # Opcional: extraer los límites exactos
-                        try:
-                            limite_diario = await page.locator('text=Límite Diario').locator("..").inner_text()
-                            log.info(f"Límite Diario: {limite_diario.strip()}")
-                        except:
-                            pass
-                        return True
-                    else:
-                        log.info("✅ Cuenta sin límites restrictivos aparentes")
-                        return False
-
-                except Exception as e:
-                    log.warning(f"Error al verificar límites: {e}")
-                    return False
-                
-
-
-            async def extraer_bonos(page):
-                try:
-                    await page.goto("https://www.betplay.com.co/menuusuario?optionMenu=4", wait_until="networkidle")
-                    await pausa_humana(2, 4)
-                    bonos_text = await page.locator("body").inner_text()
-                    if "Bono Activo" in bonos_text or "Bono Pendiente" in bonos_text:
-                        log.info("🎁 Bono detectado")
-                except:
-                    pass    
-
-            # ---------- Verificación de cuenta ----------
-            # Selectores más cercanos a Betplay. Combinamos CSS + texto con
-            # .or_(get_by_text(...)) porque mezclar 'text=' dentro de una lista
-            # CSS separada por comas NO es válido en Playwright.
-            verificada = "no"
-            try:
-                verificada_loc = page.locator(SELECTORES_VERIFICADA).or_(
-                    page.get_by_text(
-                        re.compile(
-                            r"Verificad[ao]|Cuenta verificada|Identidad confirmada",
-                            re.IGNORECASE,
-                        )
-                    )
-                ).first
-                await verificada_loc.wait_for(state="visible", timeout=6000)
-                verificada = "si"
-                logger.info(f"[{etiqueta}] Cuenta verificada: si")
-            except ERRORES_PW:
-                logger.info(f"[{etiqueta}] Sin insignia de verificación visible (no)")
-
-            # ---------- Prueba de límite ----------
-            limitada = await _probar_limite(page, base_url, etiqueta)
+            # ---------- Prueba de límite (Punto 9) ----------
+            limitada = await probar_limite(page, base_url, etiqueta)
 
             return {
-                "saldo": saldo,
-                "verificada": verificada,
+                "saldo": info["saldo"],
+                "verificada": info["verificada"],
                 "limitada": limitada,
-                "estado": "exitosa" if saldo > 0 else "revisar",
+                # Umbral de negocio: una cuenta con saldo > 1000 (COP) se da por buena.
+                "estado": "exitosa" if info["saldo"] > 1000 else "revisar",
                 "timestamp": datetime.now().isoformat(),
             }
 
@@ -528,33 +425,64 @@ async def _obtener_codigo_2fa(
     return verification_code
 
 
-async def _probar_limite(page, base_url: str, etiqueta: str) -> bool:
+async def extraer_info_cuenta(page, etiqueta: str = "") -> Dict[str, Any]:
+    """
+    Punto 6: extrae el saldo (parser es-CO) y el estado de verificación, usando
+    listas amplias de selectores combinadas con get_by_text vía .or_().
+
+    Devuelve {"saldo": float, "verificada": "si"|"no"}.
+    """
+    saldo = 0.0
     try:
-        logger.info(f"[{etiqueta}] Iniciando prueba de límite...")
-        await page.goto(f"{base_url}/deportes/futbol", wait_until="networkidle", timeout=25000)
+        saldo_locator = page.locator(SELECTORES_SALDO).or_(
+            page.get_by_text(re.compile(r"\$\s*[\d.,]+"))
+        ).first
+        await saldo_locator.wait_for(state="visible", timeout=8000)
+        saldo = extraer_saldo(await saldo_locator.inner_text(timeout=5000))
+        logger.info(f"[{etiqueta}] Saldo extraído: ${saldo:,.2f}")
+    except ERRORES_PW:
+        logger.warning(f"[{etiqueta}] No se pudo extraer el saldo")
+
+    verificada = "no"
+    try:
+        verificada_loc = page.locator(SELECTORES_VERIFICADA).or_(
+            page.get_by_text(
+                re.compile(
+                    r"Verificad[ao]|Cuenta verificada|Identidad confirmada",
+                    re.IGNORECASE,
+                )
+            )
+        ).first
+        await verificada_loc.wait_for(state="visible", timeout=6000)
+        verificada = "si"
+        logger.info(f"[{etiqueta}] Cuenta verificada: si")
+    except ERRORES_PW:
+        logger.info(f"[{etiqueta}] Sin insignia de verificación visible (no)")
+
+    return {"saldo": saldo, "verificada": verificada}
+
+
+async def probar_limite(page, base_url: str, etiqueta: str) -> bool:
+    """
+    Punto 9: revisa la página OFICIAL de límites del usuario y detecta si la
+    cuenta está limitada (texto de límite, vía contiene_restriccion, o un tope
+    diario bajo según MARCADORES_LIMITE). Más fiable que simular una apuesta.
+    """
+    try:
+        logger.info(f"[{etiqueta}] Revisando límites oficiales del usuario...")
+        await page.goto(f"{base_url}{RUTA_LIMITES}", wait_until="networkidle", timeout=20000)
         await human_delay(3, 6)
 
-        # Partido popular (liga/evento)
-        await page.locator(f"text=/{LIGAS_LIMITE_REGEX}/i").first.click()
-        await human_delay(2.5, 5)
+        texto = await page.locator("body").inner_text(timeout=10000)
 
-        # Seleccionar cualquier cuota
-        await page.locator("button, div").filter(has_text=re.compile(r"\d\.\d{1,2}")).first.click()
-        await human_delay(2, 4)
-
-        # Monto alto
-        monto_input = page.locator('input[placeholder*="Monto"], input[name*="stake"], input[type="number"]').first
-        await monto_input.fill("10000000")
-        await human_delay(2, 3.5)
-
-        # Buscar alerta en toda la página
-        cuerpo = await page.locator("body").inner_text(timeout=8000)
-        if contiene_restriccion(cuerpo, PALABRAS_LIMITE_BETPLAY):
-            logger.info(f"[{etiqueta}] ✅ CUENTA LIMITADA DETECTADA")
+        if contiene_restriccion(texto, PALABRAS_LIMITE_BETPLAY) or any(
+            marcador in texto for marcador in MARCADORES_LIMITE
+        ):
+            logger.info(f"[{etiqueta}] Cuenta LIMITADA detectada (límite diario bajo)")
             return True
 
-        logger.info(f"[{etiqueta}] No se detectó límite")
+        logger.info(f"[{etiqueta}] Sin límites restrictivos aparentes")
         return False
     except ERRORES_PW as e:
-        logger.debug(f"[{etiqueta}] Prueba de límite falló (no crítico): {e}")
+        logger.debug(f"[{etiqueta}] Prueba de límite no concluyente: {e}")
         return False
