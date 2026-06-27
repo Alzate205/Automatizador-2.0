@@ -76,6 +76,24 @@ RUTA_BONOS = "/menuusuario?optionMenu=4"
 # PALABRAS_LIMITE_BETPLAY ya cubre "límite/máximo/...".
 MARCADORES_LIMITE = ("10.000.000", "10000000")
 
+# --- Login: selectores y deteccion de credenciales incorrectas ---
+SEL_LOGIN_BTN = "text=/Iniciar sesión|Iniciar sesion|Ingresar|Login/i"
+SEL_EMAIL = 'input[name*="email" i], input#email, input[placeholder*="correo" i], input[placeholder*="mail" i]'
+SEL_PASS = 'input[name*="password" i], input#password, input[placeholder*="contraseña" i]'
+SEL_SUBMIT = 'button[type="submit"], button:has-text("Ingresar"), button:has-text("Login")'
+TEXTO_LOGIN_FALLIDO = re.compile(
+    r"credencial(es)? (incorrect|invalid)|usuario o contrase|datos incorrect|"
+    r"contrase\w+ incorrect|inicio de sesion fallido",
+    re.IGNORECASE,
+)
+INTENTOS_LOGIN = 2
+
+# --- Apuestas (Apostar Bono / Apostar Saldo) ---
+RUTA_FUTBOL = "/deportes/futbol"
+LIGAS_REGEX = r"Liga BetPlay|Primera A|BetPlay Cup|Colombia"
+SEL_CUOTA = "button, div"           # se filtra por un patron de cuota (1.85, 2.0, ...)
+SEL_MONTO_APUESTA = 'input[placeholder*="Monto" i], input[name*="stake" i], input[type="number"]'
+
 
 # ==================== COMPORTAMIENTO HUMANO ====================
 
@@ -246,7 +264,9 @@ async def process_user(
     base_url: str = BASE_URL_POR_DEFECTO,
     datos: Optional[Dict[str, Any]] = None,
     modo: str = "login",
-    captcha_waiter: Optional[Callable[[], Awaitable[None]]] = None,
+    confirmar_waiter: Optional[Callable[..., Awaitable[None]]] = None,
+    tareas: Optional[set] = None,
+    apuesta_cfg: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Se adjunta a un navegador externo (CDP). Con modo="registro" crea primero la
@@ -292,12 +312,14 @@ async def process_user(
 
             # ---------- Registro (opcional) ----------
             if modo == "registro":
-                if not await registrar_cuenta(page, datos or {}, base_url, captcha_waiter):
+                if not await registrar_cuenta(page, datos or {}, base_url, confirmar_waiter):
                     return {
                         "saldo": 0.0,
                         "verificada": "no",
                         "limitada": False,
                         "bono": "desconocido",
+                        "apuesta_bono": "n/a",
+                        "apuesta_saldo": "n/a",
                         "estado": "fallo_registro",
                         "timestamp": datetime.now().isoformat(),
                     }
@@ -309,35 +331,32 @@ async def process_user(
             await page.mouse.move(random.randint(100, 800), random.randint(100, 500))
             await human_delay(1, 2.5)
 
-            # ---------- Login ----------
+            # ---------- Login (con reintentos + deteccion de credenciales) ----------
             try:
-                await page.click(
-                    "text=/Iniciar sesión|Registrarse|Crear cuenta|Registro|Sign up/i",
-                    timeout=8000,
-                )
+                await page.click(SEL_LOGIN_BTN, timeout=8000)
                 await human_delay(2, 4)
             except ERRORES_PW:
-                logger.warning(f"[{etiqueta}] No se encontró botón de login/registro visible")
+                logger.warning(f"[{etiqueta}] No se encontro boton de login visible")
 
-            if await human_type(
-                page,
-                'input[name*="email" i], input#email, input[placeholder*="correo" i], input[placeholder*="mail" i]',
-                username,
-            ):
-                await human_delay(1, 2)
-                await human_type(
-                    page,
-                    'input[name*="password" i], input#password, input[placeholder*="contraseña" i]',
-                    password,
-                )
-                await human_delay(1, 2.5)
-                try:
-                    await page.click(
-                        'button[type="submit"], button:has-text("Ingresar"), button:has-text("Registrarse")'
+            logueado = False
+            for intento in range(1, INTENTOS_LOGIN + 1):
+                await _rellenar_login(page, username, password, etiqueta, limpiar=(intento > 1))
+                if await _login_fallido(page):
+                    logger.warning(
+                        f"[{etiqueta}] Credenciales incorrectas (intento {intento}/{INTENTOS_LOGIN})"
                     )
-                    await human_delay(3, 6)
-                except ERRORES_PW as e:
-                    logger.warning(f"[{etiqueta}] No se pudo enviar el login: {e}")
+                    await human_delay(1, 2)
+                    continue
+                logueado = True
+                break
+
+            if not logueado:
+                logger.error(f"[{etiqueta}] Login fallido: credenciales incorrectas")
+                return {
+                    "saldo": 0.0, "verificada": "no", "limitada": False, "bono": "n/a",
+                    "apuesta_bono": "n/a", "apuesta_saldo": "n/a",
+                    "estado": "login_fallido", "timestamp": datetime.now().isoformat(),
+                }
 
             # ---------- 2FA / código de verificación ----------
             # Detectamos el campo DESPUÉS del login: solo en este punto el sitio
@@ -385,20 +404,35 @@ async def process_user(
             except ERRORES_PW:
                 pass
 
-            # ---------- Saldo + Verificación (Punto 6) ----------
+            # ---------- Saldo + Verificacion (siempre) ----------
             info = await extraer_info_cuenta(page, etiqueta)
 
-            # ---------- Prueba de límite (Punto 9) ----------
-            limitada = await probar_limite(page, base_url, etiqueta)
+            # ---------- Tareas seleccionadas (hibrido) ----------
+            # Por defecto (sin config) corre verificacion de limite y bonos.
+            seleccion = tareas if tareas is not None else {"apuesta_maxima", "bonos"}
+            limitada = False
+            bono = "n/a"
+            apuesta_bono = "n/a"
+            apuesta_saldo = "n/a"
 
-            # ---------- Bonos ----------
-            bono = await verificar_bonos(page, base_url, etiqueta)
+            if "apuesta_maxima" in seleccion:
+                limitada = await probar_limite(page, base_url, etiqueta)
+            if "bonos" in seleccion:
+                bono = await verificar_bonos(page, base_url, etiqueta)
+            if "apostar_bono" in seleccion:
+                monto = _calcular_monto(apuesta_cfg, info["saldo"])
+                apuesta_bono = await apostar(page, base_url, etiqueta, monto, confirmar_waiter, "bono")
+            if "apostar_saldo" in seleccion:
+                monto = _calcular_monto(apuesta_cfg, info["saldo"])
+                apuesta_saldo = await apostar(page, base_url, etiqueta, monto, confirmar_waiter, "saldo")
 
             return {
                 "saldo": info["saldo"],
                 "verificada": info["verificada"],
                 "limitada": limitada,
                 "bono": bono,
+                "apuesta_bono": apuesta_bono,
+                "apuesta_saldo": apuesta_saldo,
                 # Umbral de negocio: una cuenta con saldo > 500 (COP) se da por buena.
                 "estado": "exitosa" if info["saldo"] > 500 else "revisar",
                 "timestamp": datetime.now().isoformat(),
@@ -411,6 +445,8 @@ async def process_user(
             "verificada": "error",
             "limitada": False,
             "bono": "Error bonos",
+            "apuesta_bono": "n/a",
+            "apuesta_saldo": "n/a",
             "estado": "error",
             "timestamp": datetime.now().isoformat(),
         }
@@ -525,3 +561,92 @@ async def verificar_bonos(page, base_url: str, etiqueta: str) -> str:
     except ERRORES_PW as e:
         logger.debug(f"[{etiqueta}] No se pudo verificar bonos: {e}")
         return "Error bonos"
+
+
+# ==================== LOGIN: RELLENO + DETECCION DE FALLO ====================
+
+async def _rellenar_login(page, username: str, password: str, etiqueta: str = "", limpiar: bool = False) -> None:
+    """Rellena correo+contrasena y envia. Con limpiar=True borra los campos antes (reintento)."""
+    if limpiar:
+        for sel in (SEL_EMAIL, SEL_PASS):
+            try:
+                await page.locator(sel).first.fill("")
+            except ERRORES_PW:
+                pass
+    if await human_type(page, SEL_EMAIL, username):
+        await human_delay(1, 2)
+        await human_type(page, SEL_PASS, password)
+        await human_delay(1, 2.5)
+        try:
+            await page.click(SEL_SUBMIT)
+            await human_delay(3, 6)
+        except ERRORES_PW as e:
+            logger.warning(f"[{etiqueta}] No se pudo enviar el login: {e}")
+
+
+async def _login_fallido(page) -> bool:
+    """True si la pagina muestra un mensaje de credenciales incorrectas."""
+    try:
+        cuerpo = await page.locator("body").inner_text(timeout=4000)
+    except ERRORES_PW:
+        return False
+    return bool(TEXTO_LOGIN_FALLIDO.search(cuerpo))
+
+
+# ==================== APUESTAS (preparar y pausar) ====================
+
+def _calcular_monto(apuesta_cfg: Optional[Dict[str, Any]], saldo: float) -> float:
+    """
+    Calcula el stake segun la config: modo 'fijo' (valor exacto) o 'porcentaje'
+    (valor % del saldo leido). Devuelve 0.0 si no hay config valida.
+    """
+    cfg = apuesta_cfg or {}
+    try:
+        valor = float(cfg.get("valor", 0) or 0)
+    except (ValueError, TypeError):
+        return 0.0
+    if str(cfg.get("modo", "fijo")).strip().lower() == "porcentaje":
+        return round(max(saldo, 0.0) * valor / 100.0, 0)
+    return valor
+
+
+async def apostar(
+    page,
+    base_url: str,
+    etiqueta: str,
+    monto: float,
+    confirmar_waiter: Optional[Callable[..., Awaitable[None]]] = None,
+    tipo: str = "saldo",
+) -> str:
+    """
+    Prepara una apuesta (evento + cuota + monto) y PAUSA para que el usuario de
+    el clic final de 'Apostar' (preparar y pausar). No confirma la apuesta.
+
+    Devuelve: 'preparada', 'sin_monto' o 'error'.
+    """
+    if not monto or monto <= 0:
+        logger.warning(f"[{etiqueta}] Apostar {tipo}: monto invalido ({monto}); se omite.")
+        return "sin_monto"
+    try:
+        logger.info(f"[{etiqueta}] Apostar {tipo}: preparando cupon por {monto:,.0f}...")
+        await page.goto(f"{base_url}{RUTA_FUTBOL}", wait_until="networkidle", timeout=20000)
+        await human_delay(3, 6)
+
+        # Evento popular + una cuota cualquiera (numero con decimales tipo 1.85).
+        await page.locator(f"text=/{LIGAS_REGEX}/i").first.click()
+        await human_delay(2.5, 5)
+        await page.locator(SEL_CUOTA).filter(has_text=re.compile(r"\d\.\d{1,2}")).first.click()
+        await human_delay(2, 4)
+
+        # Escribir el monto en el cupon.
+        await page.locator(SEL_MONTO_APUESTA).first.fill(str(int(monto)))
+        await human_delay(1.5, 3)
+
+        # Preparar y pausar: el usuario confirma manualmente (mismo mecanismo del CAPTCHA).
+        logger.warning(f"[{etiqueta}] Apuesta {tipo} preparada por {monto:,.0f}. Revisa y confirma a mano.")
+        if confirmar_waiter is not None:
+            await confirmar_waiter("apuesta")
+        return "preparada"
+    except ERRORES_PW as e:
+        logger.warning(f"[{etiqueta}] No se pudo preparar la apuesta {tipo}: {e}")
+        return "error"

@@ -24,9 +24,11 @@ from __future__ import annotations
 
 import io
 import os
+import shutil
 import subprocess
 import sys
 import time
+from datetime import datetime
 
 import altair as alt
 import pandas as pd
@@ -116,7 +118,20 @@ def bot_proceso_vivo() -> bool:
 
 def bot_activo(estado: dict) -> bool:
     """True si el bot esta trabajando (por estado publicado o proceso vivo)."""
-    return estado.get("estado") in ("corriendo", "esperando_captcha") or bot_proceso_vivo()
+    return (
+        estado.get("estado") in ("corriendo", "esperando_captcha", "esperando_apuesta")
+        or bot_proceso_vivo()
+    )
+
+
+def generar_reporte_parcial() -> str:
+    """Copia el Excel de resultados a un archivo con timestamp. Devuelve la ruta o ''."""
+    if not os.path.exists(RUTA_RESULTADOS):
+        return ""
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    destino = f"reporte_PARCIAL_{ts}.xlsx"
+    shutil.copy(RUTA_RESULTADOS, destino)
+    return destino
 
 
 def iniciar_bot(config: dict) -> None:
@@ -180,13 +195,37 @@ def tab_control() -> None:
 
     # --- Configuracion de la corrida ---
     with st.expander("Configuracion de la corrida", expanded=not activo):
-        c1, c2, c3 = st.columns(3)
-        filtro = c1.selectbox("Que ejecutar", ["todo", "login", "registro"], index=0)
-        usar_gestor = c2.toggle("Lanzar Chrome por cuenta (gestor_perfiles)", value=True)
-        c3.write("")
+        c1, c2 = st.columns(2)
+        usar_gestor = c1.toggle("Lanzar Chrome por cuenta (gestor_perfiles)", value=True)
+        filtro = c2.selectbox("Filtrar cuentas por modo", ["todo", "login", "registro"], index=0)
+
+        st.markdown("**Tareas por cuenta**")
+        t1, t2, t3, t4 = st.columns(4)
+        t_bonos = t1.checkbox("Verificar bonos", value=True)
+        t_limite = t2.checkbox("Verificar apuesta maxima", value=True)
+        t_ap_bono = t3.checkbox("Apostar bono", value=False)
+        t_ap_saldo = t4.checkbox("Apostar saldo", value=False)
+
+        st.markdown("**Monto de apuesta** (solo para Apostar bono/saldo)")
+        a1, a2 = st.columns(2)
+        modo_monto = a1.selectbox("Modo de monto", ["fijo", "porcentaje"], index=0)
+        valor_monto = a2.number_input(
+            "Valor (COP si fijo, % del saldo si porcentaje)", min_value=0.0, value=2000.0, step=500.0
+        )
+
         p1, p2 = st.columns(2)
         pausa_min = p1.number_input("Pausa min (min)", min_value=0.0, value=4.0, step=0.5)
         pausa_max = p2.number_input("Pausa max (min)", min_value=0.0, value=12.0, step=0.5)
+
+    tareas = []
+    if t_bonos:
+        tareas.append("bonos")
+    if t_limite:
+        tareas.append("apuesta_maxima")
+    if t_ap_bono:
+        tareas.append("apostar_bono")
+    if t_ap_saldo:
+        tareas.append("apostar_saldo")
 
     # --- Botones de control ---
     b1, b2, b3 = st.columns(3)
@@ -196,6 +235,8 @@ def tab_control() -> None:
             "usar_gestor": bool(usar_gestor),
             "pausa_min": float(pausa_min),
             "pausa_max": float(pausa_max),
+            "tareas": tareas,
+            "apuesta": {"modo": modo_monto, "valor": float(valor_monto)},
         })
         st.rerun()
 
@@ -203,22 +244,37 @@ def tab_control() -> None:
         detener_bot()
         st.warning("Detencion solicitada; el bot parara al terminar la cuenta actual.")
 
-    esperando_captcha = estado.get("estado") == "esperando_captcha"
-    if b3.button("Continuar (CAPTCHA resuelto)", type="primary", disabled=not esperando_captcha):
+    estado_actual = estado.get("estado")
+    esperando = estado_actual in ("esperando_captcha", "esperando_apuesta")
+    etiqueta_cont = (
+        "Continuar (apuesta lista)" if estado_actual == "esperando_apuesta"
+        else "Continuar (CAPTCHA resuelto)"
+    )
+    if b3.button(etiqueta_cont, type="primary", disabled=not esperando):
         control.pedir_continuar()
-        st.success("Senal enviada; el bot continuara el registro.")
+        st.success("Senal enviada; el bot continuara.")
 
-    if st.button("Forzar parada", disabled=not bot_proceso_vivo()):
+    cf1, cf2 = st.columns(2)
+    if cf1.button("Forzar parada", disabled=not bot_proceso_vivo()):
         forzar_parada()
         st.warning("Proceso terminado a la fuerza.")
+    if cf2.button("Generar reporte parcial"):
+        ruta = generar_reporte_parcial()
+        if ruta:
+            st.success(f"Reporte parcial guardado: {ruta}")
+        else:
+            st.info("Aun no hay resultados para copiar (falta cuentas_actualizadas.xlsx).")
 
     st.divider()
 
     # --- Estado en vivo ---
     st.subheader("Estado en vivo")
-    if esperando_captcha:
+    if estado_actual == "esperando_captcha":
         st.warning("El bot espera que resuelvas el reCAPTCHA en el navegador. "
                    "Cuando termines, pulsa 'Continuar (CAPTCHA resuelto)'.")
+    elif estado_actual == "esperando_apuesta":
+        st.warning("El bot dejo una apuesta PREPARADA. Revisala en el navegador y pulsa "
+                   "'Continuar (apuesta lista)' para confirmarla a mano.")
 
     m1, m2, m3 = st.columns(3)
     m1.metric("Estado", estado.get("estado", "inactivo"))

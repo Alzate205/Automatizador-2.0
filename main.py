@@ -140,17 +140,23 @@ def _configurar_log_archivo() -> None:
     logging.getLogger("procesador_web").setLevel(logging.INFO)
 
 
-async def _captcha_waiter() -> None:
+async def _confirmar_waiter(motivo: str = "captcha") -> None:
     """
-    Pausa el bot en el CAPTCHA hasta que el dashboard cree la senal "Continuar"
-    (o se alcance TIMEOUT_CAPTCHA_SEG, o se pida detener).
+    Pausa el bot hasta que el dashboard cree la senal "Continuar" (o se alcance
+    TIMEOUT_CAPTCHA_SEG, o se pida detener). Sirve para el CAPTCHA del registro
+    (motivo="captcha") y para confirmar a mano una apuesta preparada
+    (motivo="apuesta").
     """
+    if motivo == "apuesta":
+        estado, fase = "esperando_apuesta", "apuesta"
+        msg = "Revisa la apuesta en el navegador y pulsa Continuar para confirmarla"
+    else:
+        estado, fase = "esperando_captcha", "captcha"
+        msg = "Resuelve el CAPTCHA en el navegador y pulsa Continuar"
+
     control.limpiar_continuar()
-    control.escribir_estado(
-        estado="esperando_captcha", fase="captcha",
-        mensaje="Resuelve el CAPTCHA en el navegador y pulsa Continuar",
-    )
-    log.warning("Esperando 'Continuar' desde el dashboard para el CAPTCHA...")
+    control.escribir_estado(estado=estado, fase=fase, mensaje=msg)
+    log.warning(f"Esperando 'Continuar' desde el dashboard ({motivo})...")
     esperado = 0
     while not control.hay_senal_continuar():
         if control.hay_senal_detener():
@@ -161,14 +167,14 @@ async def _captcha_waiter() -> None:
             log.warning("Timeout esperando 'Continuar'; sigo de todos modos.")
             break
     control.limpiar_continuar()
-    control.escribir_estado(estado="corriendo", fase="registro", mensaje="Continuando registro")
+    control.escribir_estado(estado="corriendo", fase="post-confirmacion", mensaje="Continuando")
 
 
 # ---------------------------------------------------------------------------
 # PROCESAMIENTO DE UNA FILA
 # ---------------------------------------------------------------------------
 
-async def procesar_fila(row, perfil_id: int) -> dict:
+async def procesar_fila(row, perfil_id: int, tareas: set, apuesta_cfg: dict) -> dict:
     """Resuelve navegador + 2FA y ejecuta process_user (login o registro)."""
     email = row.get("Correo") or row.get("Usuario")
     password = str(row.get("Password", ""))
@@ -201,13 +207,19 @@ async def procesar_fila(row, perfil_id: int) -> dict:
         base_url=BASE_URL,
         datos=datos,
         modo=modo,
-        captcha_waiter=_captcha_waiter,
+        confirmar_waiter=_confirmar_waiter,
+        tareas=tareas,
+        apuesta_cfg=apuesta_cfg,
     )
 
     registrar_historial(
         usuario=str(email),
         estado=resultado.get("estado", "desconocido"),
-        detalle=f"Modo: {modo} | Bono: {resultado.get('bono', 'n/a')} | Puerto: {puerto}",
+        detalle=(
+            f"Modo: {modo} | Bono: {resultado.get('bono', 'n/a')} | "
+            f"ApBono: {resultado.get('apuesta_bono', 'n/a')} | "
+            f"ApSaldo: {resultado.get('apuesta_saldo', 'n/a')} | Puerto: {puerto}"
+        ),
         saldo=resultado.get("saldo", 0.0),
         verificada=resultado.get("verificada", "desconocido"),
         limitada=resultado.get("limitada", False),
@@ -229,6 +241,8 @@ async def main() -> None:
     pausa_min = float(cfg.get("pausa_min", PAUSA_MIN_MINUTOS))
     pausa_max = float(cfg.get("pausa_max", PAUSA_MAX_MINUTOS))
     filtro_modo = str(cfg.get("filtro_modo", "todo")).strip().lower()
+    tareas = set(cfg.get("tareas", ["apuesta_maxima", "bonos"]))
+    apuesta_cfg = cfg.get("apuesta", {"modo": "fijo", "valor": 0})
 
     log.exito("Iniciando Automatizador Betplay 2.0")
     inicializar_historial()
@@ -281,20 +295,20 @@ async def main() -> None:
             log.info(f"Cuenta {idx + 1}/{len(df)} - {datetime.now():%H:%M:%S} (modo: {modo_fila})")
 
             try:
-                resultado = await procesar_fila(row, perfil_id=idx)
-                ok = resultado.get("estado") != "error" and resultado.get("saldo", 0)
+                resultado = await procesar_fila(row, idx, tareas, apuesta_cfg)
+                ok = resultado.get("estado") not in ("error", "login_fallido") and resultado.get("saldo", 0)
                 registrar = log.exito if ok else log.warning
                 registrar(
-                    f"Resultado -> saldo={resultado.get('saldo')} "
-                    f"verificada={resultado.get('verificada')} "
-                    f"limitada={resultado.get('limitada')} bono={resultado.get('bono')} "
-                    f"estado={resultado.get('estado')}"
+                    f"[{idx + 1}/{len(df)}] {email}  saldo=${resultado.get('saldo')}  "
+                    f"bono={resultado.get('bono')}  ap_bono={resultado.get('apuesta_bono')}  "
+                    f"ap_saldo={resultado.get('apuesta_saldo')}  estado={resultado.get('estado')}"
                 )
             except Exception as e:  # noqa: BLE001  (aislamos el fallo por cuenta)
                 log.error(f"Fallo procesando la cuenta {idx + 1}: {e}")
                 resultado = {
                     "saldo": 0.0, "verificada": "error", "limitada": False,
-                    "bono": "Error bonos", "estado": "error",
+                    "bono": "Error bonos", "apuesta_bono": "n/a", "apuesta_saldo": "n/a",
+                    "estado": "error",
                 }
 
             estado_cuenta = resultado.get("estado", "desconocido")
@@ -304,6 +318,8 @@ async def main() -> None:
             df.at[idx, "Verificada"] = resultado.get("verificada", "desconocido")
             df.at[idx, "Limitada"] = resultado.get("limitada", False)
             df.at[idx, "Bono"] = resultado.get("bono", "")
+            df.at[idx, "Apuesta_Bono"] = resultado.get("apuesta_bono", "")
+            df.at[idx, "Apuesta_Saldo"] = resultado.get("apuesta_saldo", "")
             df.at[idx, "Estado"] = estado_cuenta
             df.at[idx, "Ultima_Ejecucion"] = datetime.now()
 
