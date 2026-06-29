@@ -94,6 +94,13 @@ LIGAS_REGEX = r"Liga BetPlay|Primera A|BetPlay Cup|Colombia"
 SEL_CUOTA = "button, div"           # se filtra por un patron de cuota (1.85, 2.0, ...)
 SEL_MONTO_APUESTA = 'input[placeholder*="Monto" i], input[name*="stake" i], input[type="number"]'
 
+# Para apostar el BONO se buscan partidos populares con cuotas medias-altas
+# (3.0 a 6.0): el rollover del bono rinde mejor con cuotas mas altas. Para el
+# saldo real (rango None) se toma la primera cuota disponible.
+RANGO_CUOTA_BONO = (3.0, 6.0)
+# Cuantas cuotas candidatas inspeccionamos como maximo al buscar el rango.
+MAX_CUOTAS_INSPECCIONAR = 60
+
 
 # ==================== COMPORTAMIENTO HUMANO ====================
 
@@ -420,8 +427,16 @@ async def process_user(
             if "bonos" in seleccion:
                 bono = await verificar_bonos(page, base_url, etiqueta)
             if "apostar_bono" in seleccion:
-                monto = _calcular_monto(apuesta_cfg, info["saldo"])
-                apuesta_bono = await apostar(page, base_url, etiqueta, monto, confirmar_waiter, "bono")
+                # Apostamos el bono SOLO en cuentas que efectivamente tienen bono.
+                # Si la tarea 'bonos' no corrio antes, lo verificamos aqui mismo.
+                if bono == "n/a":
+                    bono = await verificar_bonos(page, base_url, etiqueta)
+                if bono == "Tiene Bono":
+                    monto = _calcular_monto(apuesta_cfg, info["saldo"])
+                    apuesta_bono = await apostar(page, base_url, etiqueta, monto, confirmar_waiter, "bono")
+                else:
+                    logger.info(f"[{etiqueta}] Sin bono activo; se omite apostar el bono.")
+                    apuesta_bono = "sin_bono"
             if "apostar_saldo" in seleccion:
                 monto = _calcular_monto(apuesta_cfg, info["saldo"])
                 apuesta_saldo = await apostar(page, base_url, etiqueta, monto, confirmar_waiter, "saldo")
@@ -610,6 +625,40 @@ def _calcular_monto(apuesta_cfg: Optional[Dict[str, Any]], saldo: float) -> floa
     return valor
 
 
+async def _elegir_cuota(page, etiqueta: str, rango: Optional[tuple] = None) -> Optional[float]:
+    """
+    Hace clic en una cuota cuyo valor numerico este dentro de `rango` (min, max).
+
+    Recorre las cuotas candidatas (numeros tipo 3.45) y se queda con la primera
+    que caiga en el rango. Si `rango` es None, toma la primera cuota visible.
+    Devuelve el valor de la cuota elegida, o None si no encontro ninguna.
+    """
+    candidatos = page.locator(SEL_CUOTA).filter(has_text=re.compile(r"\d\.\d{1,2}"))
+    try:
+        total = await candidatos.count()
+    except ERRORES_PW:
+        return None
+
+    for i in range(min(total, MAX_CUOTAS_INSPECCIONAR)):
+        elemento = candidatos.nth(i)
+        try:
+            texto = (await elemento.inner_text(timeout=2000)).strip()
+        except ERRORES_PW:
+            continue
+        m = re.search(r"(\d+\.\d{1,2})", texto)
+        if not m:
+            continue
+        valor = float(m.group(1))
+        if rango is None or (rango[0] <= valor <= rango[1]):
+            try:
+                await elemento.click(timeout=4000)
+                logger.info(f"[{etiqueta}] Cuota elegida: {valor}")
+                return valor
+            except ERRORES_PW:
+                continue
+    return None
+
+
 async def apostar(
     page,
     base_url: str,
@@ -622,7 +671,10 @@ async def apostar(
     Prepara una apuesta (evento + cuota + monto) y PAUSA para que el usuario de
     el clic final de 'Apostar' (preparar y pausar). No confirma la apuesta.
 
-    Devuelve: 'preparada', 'sin_monto' o 'error'.
+    Para tipo="bono" busca partidos populares con cuotas 3.0-6.0
+    (RANGO_CUOTA_BONO); para tipo="saldo" toma la primera cuota disponible.
+
+    Devuelve: 'preparada', 'sin_monto', 'sin_cuota' o 'error'.
     """
     if not monto or monto <= 0:
         logger.warning(f"[{etiqueta}] Apostar {tipo}: monto invalido ({monto}); se omite.")
@@ -632,10 +684,16 @@ async def apostar(
         await page.goto(f"{base_url}{RUTA_FUTBOL}", wait_until="networkidle", timeout=20000)
         await human_delay(3, 6)
 
-        # Evento popular + una cuota cualquiera (numero con decimales tipo 1.85).
+        # Evento popular (liga conocida) + una cuota segun el tipo de apuesta.
         await page.locator(f"text=/{LIGAS_REGEX}/i").first.click()
         await human_delay(2.5, 5)
-        await page.locator(SEL_CUOTA).filter(has_text=re.compile(r"\d\.\d{1,2}")).first.click()
+
+        rango = RANGO_CUOTA_BONO if tipo == "bono" else None
+        cuota = await _elegir_cuota(page, etiqueta, rango)
+        if cuota is None:
+            destino = f"{rango[0]}-{rango[1]}" if rango else "cualquiera"
+            logger.warning(f"[{etiqueta}] No se encontro cuota en el rango {destino}; se omite.")
+            return "sin_cuota"
         await human_delay(2, 4)
 
         # Escribir el monto en el cupon.
@@ -643,7 +701,10 @@ async def apostar(
         await human_delay(1.5, 3)
 
         # Preparar y pausar: el usuario confirma manualmente (mismo mecanismo del CAPTCHA).
-        logger.warning(f"[{etiqueta}] Apuesta {tipo} preparada por {monto:,.0f}. Revisa y confirma a mano.")
+        logger.warning(
+            f"[{etiqueta}] Apuesta {tipo} preparada (cuota {cuota}) por {monto:,.0f}. "
+            "Revisa y confirma a mano."
+        )
         if confirmar_waiter is not None:
             await confirmar_waiter("apuesta")
         return "preparada"

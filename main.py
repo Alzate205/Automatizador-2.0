@@ -243,6 +243,9 @@ async def main() -> None:
     filtro_modo = str(cfg.get("filtro_modo", "todo")).strip().lower()
     tareas = set(cfg.get("tareas", ["apuesta_maxima", "bonos"]))
     apuesta_cfg = cfg.get("apuesta", {"modo": "fijo", "valor": 0})
+    # Seleccion explicita de cuentas desde el dashboard: lista de Correo/Usuario.
+    # Vacia o ausente = procesar todas (comportamiento previo).
+    seleccionadas = {str(x).strip() for x in (cfg.get("cuentas_seleccionadas") or []) if str(x).strip()}
 
     log.exito("Iniciando Automatizador Betplay 2.0")
     inicializar_historial()
@@ -279,6 +282,14 @@ async def main() -> None:
             # Filtro de modo desde el dashboard (todo|login|registro).
             if filtro_modo in ("login", "registro") and modo_fila != filtro_modo:
                 continue
+
+            # Filtro de seleccion explicita: si el dashboard mando una lista de
+            # cuentas, solo procesamos las que coincidan por Correo o Usuario.
+            if seleccionadas:
+                ident_correo = str(row.get("Correo", "") or "").strip()
+                ident_usuario = str(row.get("Usuario", "") or "").strip()
+                if ident_correo not in seleccionadas and ident_usuario not in seleccionadas:
+                    continue
 
             # Parada solicitada desde el dashboard (entre cuentas).
             if control.hay_senal_detener():

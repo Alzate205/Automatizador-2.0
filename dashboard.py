@@ -96,6 +96,18 @@ def to_excel_bytes(df: pd.DataFrame) -> bytes:
     return buffer.getvalue()
 
 
+def _opciones_cuentas(df: pd.DataFrame) -> list[str]:
+    """Identificadores (Correo o Usuario) de cada fila, para seleccionar cuentas."""
+    if df.empty:
+        return []
+    opciones: list[str] = []
+    for _, fila in df.iterrows():
+        ident = str(fila.get("Correo") or fila.get("Usuario") or "").strip()
+        if ident and ident.lower() != "nan" and ident not in opciones:
+            opciones.append(ident)
+    return opciones
+
+
 def cola_log(ruta: str, n: int = 40) -> str:
     """Devuelve las ultimas n lineas de un log de texto."""
     if not os.path.exists(ruta):
@@ -199,6 +211,15 @@ def tab_control() -> None:
         usar_gestor = c1.toggle("Lanzar Chrome por cuenta (gestor_perfiles)", value=True)
         filtro = c2.selectbox("Filtrar cuentas por modo", ["todo", "login", "registro"], index=0)
 
+        # Seleccion explicita de cuentas a procesar. Vacio = todas (respeta el
+        # filtro por modo de arriba). Cada opcion es el Correo o Usuario de la fila.
+        opciones_cuentas = _opciones_cuentas(leer_excel(RUTA_EXCEL))
+        cuentas_sel = st.multiselect(
+            "Cuentas a procesar (vacio = todas las del modo elegido)",
+            opciones_cuentas,
+            help="Marca cuentas concretas para revisar/apostar solo esas (Review Selected).",
+        )
+
         st.markdown("**Tareas por cuenta**")
         t1, t2, t3, t4 = st.columns(4)
         t_bonos = t1.checkbox("Verificar bonos", value=True)
@@ -237,6 +258,7 @@ def tab_control() -> None:
             "pausa_max": float(pausa_max),
             "tareas": tareas,
             "apuesta": {"modo": modo_monto, "valor": float(valor_monto)},
+            "cuentas_seleccionadas": cuentas_sel,
         })
         st.rerun()
 
@@ -408,6 +430,124 @@ def tab_resultados() -> None:
 
 
 # ---------------------------------------------------------------------------
+# PESTANA: REGISTRAR (alta de una cuenta nueva con formulario)
+# ---------------------------------------------------------------------------
+
+def _anexar_cuenta(fila: dict) -> int:
+    """Agrega una fila a cuentas.xlsx conservando las columnas existentes.
+
+    Devuelve el numero total de cuentas tras el alta.
+    """
+    df = leer_excel(RUTA_EXCEL)
+    if df.empty:
+        df = pd.DataFrame(columns=COLUMNAS_PLANTILLA)
+    # Garantizamos que existan todas las columnas que toca la fila nueva.
+    for col in fila:
+        if col not in df.columns:
+            df[col] = ""
+    df = pd.concat([df, pd.DataFrame([fila])], ignore_index=True)
+    df.to_excel(RUTA_EXCEL, index=False)
+    return len(df)
+
+
+def tab_registrar() -> None:
+    st.subheader("Registrar una cuenta nueva")
+    st.caption(
+        "Crea una cuenta nueva en Betplay con perfil aislado y comportamiento "
+        "humano. Se agrega a cuentas.xlsx con Modo = registro; luego inicia la "
+        "corrida desde la pestana Control (el bot resolvera el reCAPTCHA con tu "
+        "ayuda y el 2FA por correo automaticamente)."
+    )
+
+    with st.form("form_registrar", clear_on_submit=False):
+        st.markdown("**Datos de la cuenta**")
+        c1, c2 = st.columns(2)
+        correo = c1.text_input("Correo *", placeholder="cuenta@gmail.com")
+        clave_correo = c2.text_input(
+            "Clave del correo (app password) *", type="password",
+            help="Contrasena de aplicacion del buzon, para leer el codigo 2FA por IMAP.",
+        )
+        c3, c4 = st.columns(2)
+        password = c3.text_input("Password de Betplay *", type="password")
+        nombre = c4.text_input("Nombre (etiqueta)", placeholder="Cuenta Juan")
+
+        st.markdown("**Datos personales (para el registro)**")
+        d1, d2, d3 = st.columns(3)
+        cedula = d1.text_input("Cedula")
+        primer_nombre = d2.text_input("Primer nombre")
+        primer_apellido = d3.text_input("Primer apellido")
+
+        e1, e2 = st.columns(2)
+        telefono = e1.text_input("Telefono")
+        lugar_exp = e2.text_input("Lugar de expedicion", value="BOGOTA")
+
+        st.markdown("**Fecha de expedicion de la cedula**")
+        f1, f2, f3 = st.columns(3)
+        exp_dd = f1.text_input("Dia (DD)", value="15", key="exp_dd")
+        exp_mm = f2.text_input("Mes (MM)", value="06", key="exp_mm")
+        exp_yyyy = f3.text_input("Ano (YYYY)", value="1995", key="exp_yyyy")
+
+        st.markdown("**Fecha de nacimiento**")
+        g1, g2, g3 = st.columns(3)
+        nac_dd = g1.text_input("Dia (DD)", value="10", key="nac_dd")
+        nac_mm = g2.text_input("Mes (MM)", value="03", key="nac_mm")
+        nac_yyyy = g3.text_input("Ano (YYYY)", value="1995", key="nac_yyyy")
+
+        st.markdown("**Navegador / red**")
+        h1, h2 = st.columns(2)
+        puerto = h1.number_input("Puerto CDP", min_value=0, value=9222, step=1)
+        proxy = h2.text_input(
+            "Proxy (opcional)", placeholder="host:puerto",
+            help="Para rotacion de IP. Se pasa a Chrome como --proxy-server.",
+        )
+
+        enviado = st.form_submit_button("Agregar cuenta a la lista", type="primary")
+
+    if enviado:
+        if not (correo and clave_correo and password):
+            st.error("Correo, clave del correo y password de Betplay son obligatorios.")
+            return
+        fila = {
+            "Usuario": correo,
+            "Password": password,
+            "Nombre": nombre or correo,
+            "Correo": correo,
+            "ClaveCorreo": clave_correo,
+            "Puerto": int(puerto),
+            "Modo": "registro",
+            "Cedula": cedula,
+            "PrimerNombre": primer_nombre,
+            "PrimerApellido": primer_apellido,
+            "Telefono": telefono,
+            "LugarExpedicion": lugar_exp,
+            "ExpedicionDD": exp_dd, "ExpedicionMM": exp_mm, "ExpedicionYYYY": exp_yyyy,
+            "NacimientoDD": nac_dd, "NacimientoMM": nac_mm, "NacimientoYYYY": nac_yyyy,
+            "Proxy": proxy,
+        }
+        try:
+            total = _anexar_cuenta(fila)
+            st.success(
+                f"Cuenta '{correo}' agregada (Modo = registro). "
+                f"Ahora hay {total} cuenta(s). Ve a Control para iniciar la corrida."
+            )
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"No se pudo guardar la cuenta: {exc}")
+
+    st.divider()
+    st.markdown("**Cuentas en modo registro pendientes**")
+    df = leer_excel(RUTA_EXCEL)
+    if not df.empty and "Modo" in df.columns:
+        pendientes = df[df["Modo"].astype(str).str.strip().str.lower() == "registro"]
+        if not pendientes.empty:
+            cols = [c for c in ("Nombre", "Correo", "Telefono", "Puerto") if c in pendientes.columns]
+            st.dataframe(pendientes[cols] if cols else pendientes, width="stretch", hide_index=True)
+        else:
+            st.info("No hay cuentas en modo registro todavia.")
+    else:
+        st.info("Aun no hay cuentas guardadas.")
+
+
+# ---------------------------------------------------------------------------
 # APP
 # ---------------------------------------------------------------------------
 
@@ -415,12 +555,14 @@ def main() -> None:
     st.set_page_config(page_title="Automatizador Betplay", layout="wide")
     st.title("Automatizador Betplay - Panel de control")
 
-    t1, t2, t3 = st.tabs(["Cuentas", "Control", "Resultados"])
+    t1, t2, t3, t4 = st.tabs(["Cuentas", "Registrar", "Control", "Resultados"])
     with t1:
         tab_cuentas()
     with t2:
-        tab_control()
+        tab_registrar()
     with t3:
+        tab_control()
+    with t4:
         tab_resultados()
 
 
