@@ -11,6 +11,12 @@ progreso.txt
 cuentas_actualizadas.xlsx
 historial_auditoria.csv
 
+# Proxies (puede contener credenciales user:pass@ip:port; no versionar)
+proxies.txt
+
+# Variables de entorno (credenciales SMTP / app passwords; no versionar)
+.env
+
 # Python
 __pycache__/
 *.pyc

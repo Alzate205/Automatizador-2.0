@@ -40,6 +40,7 @@ import control
 from auditor import (
     ARCHIVO_HISTORIAL,
     PUERTO_POR_DEFECTO,
+    imprimir_reporte_final,
     inicializar_historial,
     leer_cuentas,
     log,
@@ -74,7 +75,9 @@ ARCHIVO_PROGRESO = "progreso.txt"
 GUARDADO_PARCIAL_CADA = 10   # cada cuantas cuentas se anuncia el guardado parcial
 
 # Maximo de espera (segundos) por la senal "Continuar" del dashboard en el CAPTCHA.
-TIMEOUT_CAPTCHA_SEG = 600
+# 15 min: el registro masivo necesita mas margen para rellenar el formulario y
+# resolver el reCAPTCHA a mano antes de continuar.
+TIMEOUT_CAPTCHA_SEG = 900
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +104,38 @@ async def _resolver_endpoint(row, perfil_id: int) -> tuple[int, str]:
 
     puerto = _puerto_de_fila(row, perfil_id)
     return puerto, construir_endpoint(puerto=puerto)
+
+
+def cargar_y_asignar_proxies(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Carga proxies.txt y los asigna ROTATIVAMENTE a las filas SIN proxy válido.
+
+    Respeta las filas que ya traen un proxy en su columna 'Proxy'. Si no hay
+    proxies en el archivo, devuelve el DataFrame intacto. Solo tiene efecto real
+    cuando se usa el gestor de perfiles (es quien pasa --proxy-server a Chrome).
+    """
+    from gestor_perfiles import cargar_proxies_desde_archivo, proxy_valido
+
+    proxies = cargar_proxies_desde_archivo()
+    if not proxies:
+        log.info("Sin proxies en proxies.txt; las cuentas usan su proxy propio o ninguno.")
+        return df
+
+    if "Proxy" not in df.columns:
+        df["Proxy"] = ""
+
+    proxy_idx = 0
+    asignados = 0
+    for i, row in df.iterrows():
+        if proxy_valido(row.get("Proxy", "")) is None:
+            df.at[i, "Proxy"] = proxies[proxy_idx % len(proxies)]
+            proxy_idx += 1
+            asignados += 1
+
+    log.exito(
+        f"Proxies: {len(proxies)} disponible(s); asignados a {asignados} cuenta(s) sin proxy."
+    )
+    return df
 
 
 # ---------------------------------------------------------------------------
@@ -216,7 +251,8 @@ async def procesar_fila(row, perfil_id: int, tareas: set, apuesta_cfg: dict) -> 
         usuario=str(email),
         estado=resultado.get("estado", "desconocido"),
         detalle=(
-            f"Modo: {modo} | Bono: {resultado.get('bono', 'n/a')} | "
+            f"Modo: {modo} | Reg: {resultado.get('registro', 'n/a')} | "
+            f"Bono: {resultado.get('bono', 'n/a')} | "
             f"ApBono: {resultado.get('apuesta_bono', 'n/a')} | "
             f"ApSaldo: {resultado.get('apuesta_saldo', 'n/a')} | Puerto: {puerto}"
         ),
@@ -225,6 +261,68 @@ async def procesar_fila(row, perfil_id: int, tareas: set, apuesta_cfg: dict) -> 
         limitada=resultado.get("limitada", False),
     )
     return resultado
+
+
+# ---------------------------------------------------------------------------
+# NOTIFICACIÓN FINAL POR EMAIL (opcional)
+# ---------------------------------------------------------------------------
+
+def _enviar_email_sync(reporte: dict) -> None:
+    """Envío SMTP (bloqueante). Se ejecuta en un hilo desde enviar_resumen_email."""
+    import smtplib
+    from email.message import EmailMessage
+
+    # Carga opcional de .env (si python-dotenv está instalado); si no, se usan
+    # las variables de entorno del sistema directamente.
+    try:
+        from dotenv import load_dotenv  # type: ignore
+
+        load_dotenv()
+    except ImportError:
+        pass
+
+    smtp_user = os.getenv("SMTP_USER")
+    smtp_pass = os.getenv("SMTP_PASS")
+    email_from = os.getenv("EMAIL_FROM") or smtp_user
+    email_to = os.getenv("EMAIL_TO") or email_from
+    smtp_server = os.getenv("SMTP_SERVER", "smtp.gmail.com")
+    smtp_port = int(os.getenv("SMTP_PORT", "587"))
+
+    if not all([email_from, email_to, smtp_user, smtp_pass]):
+        log.warning(
+            "Email no configurado (faltan SMTP_USER/SMTP_PASS/EMAIL_FROM/EMAIL_TO); "
+            "se omite la notificación."
+        )
+        return
+
+    total = reporte.get("Total procesadas", reporte.get("mensaje", "?"))
+    msg = EmailMessage()
+    msg["Subject"] = f"Betplay Bot - Corrida finalizada ({total} cuentas)"
+    msg["From"] = email_from
+    msg["To"] = email_to
+
+    lineas = [f"Resumen de la corrida - {datetime.now():%Y-%m-%d %H:%M}", ""]
+    lineas += [f"  {clave}: {valor}" for clave, valor in reporte.items()]
+    lineas += ["", "Revisa el dashboard y historial_auditoria.csv para el detalle."]
+    msg.set_content("\n".join(lineas))
+
+    with smtplib.SMTP(smtp_server, smtp_port, timeout=30) as server:
+        server.starttls()
+        server.login(smtp_user, smtp_pass)
+        server.send_message(msg)
+    log.exito(f"Resumen enviado por email a {email_to}")
+
+
+async def enviar_resumen_email(reporte: dict) -> None:
+    """
+    Envía un resumen de la corrida por email (SMTP) si están configuradas las
+    variables de entorno. Nunca lanza: ante cualquier fallo, solo registra un
+    aviso para no afectar el cierre de la corrida.
+    """
+    try:
+        await asyncio.to_thread(_enviar_email_sync, reporte)
+    except Exception as e:  # noqa: BLE001
+        log.warning(f"No se pudo enviar el email de resumen: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +364,9 @@ async def main() -> None:
         log.error(f"No se pudo leer {fuente}: {e}")
         control.escribir_estado(estado="error", mensaje=f"No se pudo leer {fuente}: {e}")
         return
+
+    # Rotacion automatica de proxies: asigna proxies.txt a las filas sin proxy.
+    df = cargar_y_asignar_proxies(df)
 
     control.escribir_estado(total=len(df))
     if progreso > 0:
@@ -319,7 +420,7 @@ async def main() -> None:
                 resultado = {
                     "saldo": 0.0, "verificada": "error", "limitada": False,
                     "bono": "Error bonos", "apuesta_bono": "n/a", "apuesta_saldo": "n/a",
-                    "estado": "error",
+                    "registro": "n/a", "estado": "error",
                 }
 
             estado_cuenta = resultado.get("estado", "desconocido")
@@ -331,6 +432,7 @@ async def main() -> None:
             df.at[idx, "Bono"] = resultado.get("bono", "")
             df.at[idx, "Apuesta_Bono"] = resultado.get("apuesta_bono", "")
             df.at[idx, "Apuesta_Saldo"] = resultado.get("apuesta_saldo", "")
+            df.at[idx, "Registro"] = resultado.get("registro", "n/a")
             df.at[idx, "Estado"] = estado_cuenta
             df.at[idx, "Ultima_Ejecucion"] = datetime.now()
 
@@ -362,6 +464,14 @@ async def main() -> None:
     estado_final = "detenido" if detenido else "finalizado"
     control.escribir_estado(estado=estado_final, fase="fin", mensaje="Proceso terminado", resumen=resumen)
     log.exito(f"Proceso terminado ({estado_final}). Resultados en {EXCEL_OUTPUT} y {ARCHIVO_HISTORIAL}")
+
+    # Reporte final agregado (lee el historial CSV y lo pinta en el log del bot).
+    try:
+        reporte = imprimir_reporte_final()
+        # Notificación opcional por email (solo si está configurado el SMTP).
+        await enviar_resumen_email(reporte)
+    except Exception as e:  # noqa: BLE001
+        log.warning(f"No se pudo generar el reporte/email final: {e}")
 
 
 if __name__ == "__main__":

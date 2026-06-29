@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import io
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -45,10 +46,14 @@ LOG_CONSOLA = "bot_consola.log"
 # Columnas sensibles (se pueden ocultar en la vista de resultados).
 COLUMNAS_SENSIBLES = ["Password", "ClaveCorreo"]
 
-# Esquema base para crear una lista de cuentas desde cero.
+# Esquema base para crear una lista de cuentas desde cero. Incluye los campos de
+# registro (fechas y lugar de expedicion) que usan tab_registrar y el registro masivo.
 COLUMNAS_PLANTILLA = [
     "Usuario", "Password", "Nombre", "Correo", "ClaveCorreo", "Puerto", "Modo",
     "Cedula", "PrimerNombre", "PrimerApellido", "Telefono",
+    "ExpedicionDD", "ExpedicionMM", "ExpedicionYYYY",
+    "NacimientoDD", "NacimientoMM", "NacimientoYYYY",
+    "LugarExpedicion",
 ]
 
 
@@ -64,6 +69,34 @@ def leer_excel(ruta: str) -> pd.DataFrame:
         return pd.read_excel(ruta)
     except Exception:  # noqa: BLE001
         return pd.DataFrame()
+
+
+def generar_plantilla_registro(n: int = 10) -> pd.DataFrame:
+    """Genera una plantilla de n cuentas en modo registro, lista para rellenar.
+
+    Asigna puertos CDP consecutivos (9222, 9223, ...) y valores por defecto
+    razonables en las fechas/lugar de expedicion; los datos personales quedan
+    vacios para que los completes.
+    """
+    df = pd.DataFrame(columns=COLUMNAS_PLANTILLA)
+    for i in range(int(n)):
+        df.loc[i] = {
+            "Usuario": "",
+            "Password": "",
+            "Nombre": f"Cuenta {i + 1}",
+            "Correo": "",
+            "ClaveCorreo": "",
+            "Puerto": 9222 + i,
+            "Modo": "registro",
+            "Cedula": "",
+            "PrimerNombre": "",
+            "PrimerApellido": "",
+            "Telefono": "",
+            "ExpedicionDD": "15", "ExpedicionMM": "06", "ExpedicionYYYY": "1995",
+            "NacimientoDD": "10", "NacimientoMM": "03", "NacimientoYYYY": "1995",
+            "LugarExpedicion": "BOGOTA",
+        }
+    return df
 
 
 def leer_historial() -> pd.DataFrame:
@@ -87,6 +120,26 @@ def contar_limitadas(df: pd.DataFrame) -> int:
         return 0
     valores = df["Limitada"].astype(str).str.strip().str.lower()
     return int(valores.isin(["true", "si", "1", "limitada"]).sum())
+
+
+def serie_registro(df: pd.DataFrame) -> pd.Series:
+    """
+    Estado de registro por fila, normalizado a minúsculas.
+
+    Lo toma de la columna 'Registro' (Excel de resultados) o, en su defecto, lo
+    parsea de 'Reg: <estado>' dentro de 'Detalle' (historial CSV). Devuelve ""
+    para filas sin dato (p. ej. cuentas en modo login).
+    """
+    if "Registro" in df.columns:
+        return df["Registro"].astype(str).str.strip().str.lower()
+    if "Detalle" in df.columns:
+        return (
+            df["Detalle"].astype(str)
+            .str.extract(r"reg:\s*([a-z_]+)", flags=re.IGNORECASE, expand=False)
+            .fillna("")
+            .str.lower()
+        )
+    return pd.Series([""] * len(df), index=df.index)
 
 
 def to_excel_bytes(df: pd.DataFrame) -> bytes:
@@ -185,14 +238,109 @@ def tab_cuentas() -> None:
     if df.empty:
         df = pd.DataFrame(columns=COLUMNAS_PLANTILLA)
 
-    editado = st.data_editor(df, num_rows="dynamic", width="stretch", key="editor_cuentas")
+    editado = st.data_editor(
+        df,
+        num_rows="dynamic",
+        width="stretch",
+        key="editor_cuentas",
+        column_config={
+            "Modo": st.column_config.SelectboxColumn(
+                "Modo", options=["login", "registro"], help="login = verificar; registro = crear cuenta"
+            ),
+        },
+    )
 
-    if st.button("Guardar cuentas", type="primary"):
+    c1, c2 = st.columns(2)
+    if c1.button("Guardar cuentas", type="primary"):
         try:
             editado.to_excel(RUTA_EXCEL, index=False)
             st.success(f"Guardado {RUTA_EXCEL} ({len(editado)} cuenta(s)).")
         except Exception as exc:  # noqa: BLE001
             st.error(f"No se pudo guardar: {exc}")
+
+    # Reemplaza la lista por una plantilla limpia (operacion destructiva).
+    if c2.button("Reemplazar por plantilla (5 cuentas)"):
+        try:
+            generar_plantilla_registro(5).to_excel(RUTA_EXCEL, index=False)
+            st.warning("La lista se reemplazo por una plantilla de 5 cuentas en modo registro.")
+            st.rerun()
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"No se pudo generar la plantilla: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# PESTANA: CREAR MASIVAS
+# ---------------------------------------------------------------------------
+
+def tab_crear_cuentas() -> None:
+    st.subheader("Crear cuentas masivas")
+    st.caption(
+        "Genera una plantilla de varias cuentas en modo registro, o sube un Excel "
+        "con datos personales para anexarlos a la lista actual."
+    )
+
+    opcion = st.radio(
+        "Como quieres crear las cuentas?",
+        ["Generar plantilla", "Subir Excel con datos"],
+        horizontal=True,
+    )
+
+    if opcion == "Generar plantilla":
+        num = st.number_input(
+            "Numero de cuentas a generar", min_value=1, max_value=200, value=10, step=1
+        )
+        sobrescribir = st.checkbox(
+            "Reemplazar la lista actual (si no, se anexan)", value=False
+        )
+        if st.button("Generar plantilla", type="primary"):
+            plantilla = generar_plantilla_registro(int(num))
+            try:
+                if sobrescribir:
+                    df_final = plantilla
+                else:
+                    df_actual = leer_excel(RUTA_EXCEL)
+                    df_final = (
+                        plantilla if df_actual.empty
+                        else pd.concat([df_actual, plantilla], ignore_index=True)
+                    )
+                df_final.to_excel(RUTA_EXCEL, index=False)
+                st.success(
+                    f"Plantilla de {int(num)} cuenta(s) "
+                    f"{'guardada' if sobrescribir else 'anexada'}; total {len(df_final)}."
+                )
+                st.download_button(
+                    "Descargar plantilla (Excel)",
+                    to_excel_bytes(plantilla),
+                    "plantilla_registro.xlsx",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            except Exception as exc:  # noqa: BLE001
+                st.error(f"No se pudo guardar la plantilla: {exc}")
+
+    else:
+        subido = st.file_uploader(
+            "Sube un Excel con datos (Cedula, PrimerNombre, Correo, etc.)", type=["xlsx"]
+        )
+        if subido is not None:
+            try:
+                df_nuevo = pd.read_excel(subido)
+            except Exception as exc:  # noqa: BLE001
+                st.error(f"No se pudo leer el Excel: {exc}")
+                return
+            st.dataframe(df_nuevo.head(20), width="stretch", hide_index=True)
+            if st.button("Anexar a la lista del bot", type="primary"):
+                try:
+                    df_actual = leer_excel(RUTA_EXCEL)
+                    df_combinado = (
+                        df_nuevo if df_actual.empty
+                        else pd.concat([df_actual, df_nuevo], ignore_index=True)
+                    )
+                    df_combinado.to_excel(RUTA_EXCEL, index=False)
+                    st.success(
+                        f"Se anexaron {len(df_nuevo)} cuenta(s); total {len(df_combinado)}."
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"No se pudo anexar: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -210,6 +358,26 @@ def tab_control() -> None:
         c1, c2 = st.columns(2)
         usar_gestor = c1.toggle("Lanzar Chrome por cuenta (gestor_perfiles)", value=True)
         filtro = c2.selectbox("Filtrar cuentas por modo", ["todo", "login", "registro"], index=0)
+
+        # Proxies disponibles (proxies.txt) para la rotacion automatica en main.py.
+        try:
+            from gestor_perfiles import cargar_proxies_desde_archivo
+            n_proxies = len(cargar_proxies_desde_archivo())
+        except Exception:  # noqa: BLE001
+            n_proxies = 0
+        pc1, pc2 = st.columns([4, 1])
+        if n_proxies:
+            pc1.success(
+                f"Proxies disponibles en proxies.txt: {n_proxies} "
+                "(se asignan rotativamente a las cuentas sin proxy)."
+            )
+        else:
+            pc1.info(
+                "Sin proxies en proxies.txt. Agrega uno por linea para activar la "
+                "rotacion automatica (las cuentas correran sin proxy)."
+            )
+        if pc2.button("Recargar proxies"):
+            st.rerun()
 
         # Seleccion explicita de cuentas a procesar. Vacio = todas (respeta el
         # filtro por modo de arriba). Cada opcion es el Correo o Usuario de la fila.
@@ -347,6 +515,25 @@ def tab_resultados() -> None:
     if df.empty:
         st.info("No hay datos en esa fuente todavia.")
         return
+
+    # --- Resumen de registros (auditoria rapida tras corridas de registro) ---
+    reg = serie_registro(df)
+    es_registro = reg.isin(
+        {"registro_ok", "registro_incierto", "registro_rechazado", "error_registro"}
+    )
+    n_reg = int(es_registro.sum())
+    if n_reg:
+        st.markdown("### Resumen de registros")
+        r1, r2, r3, r4 = st.columns(4)
+        r1.metric("Registro OK", int((reg == "registro_ok").sum()))
+        r2.metric(
+            "Rechazados",
+            int(reg.isin({"registro_rechazado", "error_registro"}).sum()),
+        )
+        r3.metric("Inciertos", int((reg == "registro_incierto").sum()))
+        r4.metric("Total registros", n_reg)
+        st.bar_chart(reg[es_registro].value_counts())
+        st.divider()
 
     # Filtros.
     f1, f2 = st.columns([2, 1])
@@ -555,14 +742,18 @@ def main() -> None:
     st.set_page_config(page_title="Automatizador Betplay", layout="wide")
     st.title("Automatizador Betplay - Panel de control")
 
-    t1, t2, t3, t4 = st.tabs(["Cuentas", "Registrar", "Control", "Resultados"])
+    t1, t2, t3, t4, t5 = st.tabs(
+        ["Cuentas", "Registrar", "Crear Masivas", "Control", "Resultados"]
+    )
     with t1:
         tab_cuentas()
     with t2:
         tab_registrar()
     with t3:
-        tab_control()
+        tab_crear_cuentas()
     with t4:
+        tab_control()
+    with t5:
         tab_resultados()
 
 

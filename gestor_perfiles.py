@@ -31,6 +31,42 @@ def encontrar_chrome_exe() -> str:
     raise FileNotFoundError("No se encontró Google Chrome. Instálalo o configura la ruta manualmente.")
 
 
+RUTA_PROXIES = "proxies.txt"
+
+
+def cargar_proxies_desde_archivo(ruta: str = RUTA_PROXIES) -> list:
+    """
+    Carga proxies desde un archivo de texto (uno por línea).
+
+    Ignora líneas vacías y comentarios (que empiezan con '#'). Devuelve una lista
+    vacía si el archivo no existe. Útil para asignar proxies a los perfiles cuando
+    el Excel no trae la columna 'Proxy'.
+    """
+    if not os.path.exists(ruta):
+        return []
+    try:
+        # utf-8-sig: tolera el BOM que agregan el Bloc de notas / PowerShell, que
+        # de lo contrario contaminaria el primer proxy con '﻿'.
+        with open(ruta, "r", encoding="utf-8-sig") as f:
+            return [
+                linea.strip()
+                for linea in f
+                if linea.strip() and not linea.strip().startswith("#")
+            ]
+    except Exception:
+        return []
+
+
+def proxy_valido(proxy: Optional[str]) -> Optional[str]:
+    """Normaliza el valor de proxy: devuelve None si está vacío o es 'none'/'nan'."""
+    if not proxy:
+        return None
+    limpio = str(proxy).strip()
+    if not limpio or limpio.lower() in ("none", "nan", "ninguno", "sin proxy"):
+        return None
+    return limpio
+
+
 def lanzar_perfil_chrome(
     perfil_id: int, 
     proxy: Optional[str] = None,
@@ -56,8 +92,15 @@ def lanzar_perfil_chrome(
         "--lang=es-CO",
         "--start-maximized",
         "--disable-popup-blocking",
+        # Flags anti-detección adicionales: desactivan el aislamiento de sitios
+        # y el sandbox (reducen señales de automatización a costa de seguridad;
+        # aceptable para perfiles desechables de automatización).
+        "--disable-features=IsolateOrigins,site-per-process",
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
     ]
 
+    proxy = proxy_valido(proxy)
     if proxy:
         cmd.append(f"--proxy-server={proxy}")
 
@@ -67,10 +110,10 @@ def lanzar_perfil_chrome(
     try:
         print(f"Lanzando perfil {perfil_id} | Puerto: {puerto} | Proxy: {proxy or 'Ninguno'}")
         subprocess.Popen(cmd)
-        
-        # Espera humana realista
-        time.sleep(5 + random.uniform(1.5, 3.5))
-        
+
+        # Espera humana realista (margen para que el endpoint CDP quede listo)
+        time.sleep(5 + random.uniform(2.0, 4.5))
+
         endpoint = f"http://127.0.0.1:{puerto}"
         print(f"Perfil {perfil_id} listo → {endpoint}")
         return puerto, endpoint

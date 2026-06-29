@@ -4,3 +4,5 @@ playwright
 colorama
 altair
 streamlit
+playwright-stealth
+python-dotenv

@@ -30,6 +30,30 @@ from playwright.async_api import (
     Error as PlaywrightError,
 )
 
+# playwright-stealth: parchea la huella del navegador para evadir detección de
+# automatización (navigator.webdriver, etc.). Es opcional: si no está instalado,
+# el procesador sigue funcionando sin stealth (solo se registra un aviso).
+#
+# La API cambió entre versiones: 2.x expone la clase `Stealth` (método
+# apply_stealth_async); 1.x exponía la función `stealth_async`. Soportamos ambas
+# y dejamos un único callable `aplicar_stealth(page)` para el resto del código.
+aplicar_stealth: Optional[Callable[[Any], Awaitable[None]]] = None
+try:
+    from playwright_stealth import Stealth  # API 2.x
+
+    _stealth = Stealth()
+
+    async def aplicar_stealth(page):  # type: ignore[no-redef]
+        await _stealth.apply_stealth_async(page)
+except ImportError:
+    try:
+        from playwright_stealth import stealth_async  # API 1.x
+
+        async def aplicar_stealth(page):  # type: ignore[no-redef]
+            await stealth_async(page)
+    except ImportError:  # pragma: no cover - depende del entorno
+        aplicar_stealth = None
+
 # Utilidades compartidas del proyecto (evitan duplicar lógica aquí).
 from extraccion import extraer_saldo
 from restricciones import contiene_restriccion
@@ -155,12 +179,26 @@ async def scroll_humano(page):
 
 # ==================== REGISTRO COMPLETO (BETPLAY) ====================
 
+# Validacion post-registro (heuristica). Son marcadores GENERICOS en minusculas
+# que se buscan en el texto/URL de la pagina tras enviar el formulario. Afinalos
+# con los textos reales que muestre Betplay al completar/rechazar un registro.
+INDICADORES_REGISTRO_OK = (
+    "registro exitoso", "cuenta creada", "bienvenido", "verifica tu correo",
+    "/cuenta", "dashboard", "mi cuenta",
+)
+INDICADORES_REGISTRO_ERROR = (
+    "ya registrado", "correo existe", "correo ya", "cedula ya", "cédula ya",
+    "ya existe", "invalido", "inválido", "no se pudo completar", "intentalo mas tarde",
+    "inténtalo más tarde",
+)
+
+
 async def registrar_cuenta(
     page,
     datos: Dict[str, Any],
     base_url: str = BASE_URL_POR_DEFECTO,
     captcha_waiter: Optional[Callable[[], Awaitable[None]]] = None,
-) -> bool:
+) -> Dict[str, Any]:
     """
     Registro completo con los selectores reales de Betplay.
 
@@ -168,8 +206,11 @@ async def registrar_cuenta(
     NacimientoDD/MM/YYYY, PrimerNombre, PrimerApellido, Telefono, Correo, Password.
 
     Antes del envío hace una PAUSA MANUAL para que resuelvas el reCAPTCHA a mano
-    en el navegador (ver ESPERA_CAPTCHA_SEG). Devuelve True si envió el
-    formulario, False ante cualquier fallo.
+    en el navegador (ver ESPERA_CAPTCHA_SEG). Tras enviar el formulario hace una
+    validacion post-registro heuristica.
+
+    Devuelve un dict {"ok": bool, "estado": str, "mensaje": str}, con estado en
+    {"registro_ok", "registro_rechazado", "registro_incierto", "error_registro"}.
     """
     try:
         logger.info("Iniciando registro completo...")
@@ -247,16 +288,36 @@ async def registrar_cuenta(
         # Botón final.
         await page.click('button:has-text("Completar Registro"), button[type="submit"]', timeout=15000)
         await human_delay(6, 10)
-
         logger.info("Formulario de registro enviado")
-        return True
+
+        # ---------- VALIDACION POST-REGISTRO (heuristica) ----------
+        # Leemos texto del body + URL para decidir si el registro fue OK, fue
+        # rechazado, o quedo incierto (enviado pero sin senal clara).
+        try:
+            cuerpo = (await page.locator("body").inner_text(timeout=8000)).lower()
+        except ERRORES_PW:
+            cuerpo = ""
+        url_actual = (page.url or "").lower()
+        texto = f"{cuerpo} {url_actual}"
+
+        if any(ind in texto for ind in INDICADORES_REGISTRO_ERROR):
+            logger.warning("Registro RECHAZADO: indicador de error detectado en la pagina.")
+            return {"ok": False, "estado": "registro_rechazado",
+                    "mensaje": "Error detectado en la pagina tras enviar el registro"}
+        if any(ind in texto for ind in INDICADORES_REGISTRO_OK):
+            logger.info("Registro detectado como EXITOSO.")
+            return {"ok": True, "estado": "registro_ok", "mensaje": "Registro completado"}
+
+        logger.info("Registro enviado pero con resultado INCIERTO (sin senal clara).")
+        return {"ok": True, "estado": "registro_incierto",
+                "mensaje": "Enviado; resultado incierto (revisar manualmente)"}
 
     except ERRORES_PW as e:
         logger.error(f"Error en registro (Playwright): {e}")
-        return False
+        return {"ok": False, "estado": "error_registro", "mensaje": str(e)}
     except Exception as e:  # noqa: BLE001
         logger.error(f"Error inesperado en registro: {e}")
-        return False
+        return {"ok": False, "estado": "error_registro", "mensaje": str(e)}
 
 
 # ==================== PROCESADOR PRINCIPAL ====================
@@ -291,6 +352,8 @@ async def process_user(
     etiqueta = nombre or username
     page = None
     new_page_created = False
+    # Estado del registro (sobrevive al login para poder auditarlo). "n/a" en modo login.
+    registro_estado = "n/a"
 
     try:
         async with async_playwright() as p:
@@ -317,9 +380,31 @@ async def process_user(
                 page = await context.new_page()
                 new_page_created = True
 
+            # Aplicar stealth a la página (si el paquete está disponible) para
+            # reducir la huella de automatización antes de navegar.
+            if aplicar_stealth is not None:
+                try:
+                    await aplicar_stealth(page)
+                    logger.info(f"[{etiqueta}] Stealth aplicado a la página")
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"[{etiqueta}] No se pudo aplicar stealth: {e}")
+            else:
+                logger.debug(
+                    "playwright-stealth no instalado; se continúa sin stealth "
+                    "(pip install playwright-stealth)"
+                )
+
             # ---------- Registro (opcional) ----------
             if modo == "registro":
-                if not await registrar_cuenta(page, datos or {}, base_url, confirmar_waiter):
+                reg = await registrar_cuenta(page, datos or {}, base_url, confirmar_waiter)
+                registro_estado = reg.get("estado", "error_registro")
+                logger.info(
+                    f"[{etiqueta}] Registro -> estado={registro_estado} "
+                    f"({reg.get('mensaje')})"
+                )
+                # Solo abortamos si el registro NO fue ok (rechazado o error). Si
+                # quedo 'registro_incierto' (ok=True) seguimos al login para confirmar.
+                if not reg.get("ok"):
                     return {
                         "saldo": 0.0,
                         "verificada": "no",
@@ -327,7 +412,8 @@ async def process_user(
                         "bono": "desconocido",
                         "apuesta_bono": "n/a",
                         "apuesta_saldo": "n/a",
-                        "estado": "fallo_registro",
+                        "registro": registro_estado,
+                        "estado": registro_estado,
                         "timestamp": datetime.now().isoformat(),
                     }
 
@@ -448,6 +534,7 @@ async def process_user(
                 "bono": bono,
                 "apuesta_bono": apuesta_bono,
                 "apuesta_saldo": apuesta_saldo,
+                "registro": registro_estado,
                 # Umbral de negocio: una cuenta con saldo > 500 (COP) se da por buena.
                 "estado": "exitosa" if info["saldo"] > 500 else "revisar",
                 "timestamp": datetime.now().isoformat(),
@@ -462,6 +549,7 @@ async def process_user(
             "bono": "Error bonos",
             "apuesta_bono": "n/a",
             "apuesta_saldo": "n/a",
+            "registro": registro_estado,
             "estado": "error",
             "timestamp": datetime.now().isoformat(),
         }

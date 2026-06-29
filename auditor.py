@@ -221,22 +221,108 @@ def registrar_historial(
 
 def leer_cuentas(ruta: str = ARCHIVO_EXCEL) -> pd.DataFrame:
     """
-    Lee el Excel de cuentas y valida que tenga las columnas esperadas.
+    Lee el Excel de cuentas de forma TOLERANTE (apto para login y registro masivo).
 
-    Devuelve un DataFrame. Lanza excepción si el archivo no existe o le faltan
-    columnas requeridas.
+    - Normaliza los nombres de columna (quita espacios).
+    - Exige al menos una columna de identificación ('Correo' o 'Usuario').
+    - Garantiza que existan las columnas esperadas + 'Modo'/'Proxy' (las ausentes
+      se crean vacías; 'Modo' por defecto = 'login').
+    - Limpia NaN -> "" y normaliza 'Modo' a minúsculas.
+
+    Lanza FileNotFoundError si el archivo no existe, o ValueError si no hay
+    ninguna columna de identificación.
     """
     if not os.path.exists(ruta):
         raise FileNotFoundError(f"No se encontró el archivo de cuentas: {ruta}")
 
     df = pd.read_excel(ruta)
+    df.columns = [str(col).strip() for col in df.columns]
 
-    faltantes = [c for c in COLUMNAS_ESPERADAS if c not in df.columns]
-    if faltantes:
+    if "Correo" not in df.columns and "Usuario" not in df.columns:
         raise ValueError(
-            f"Al Excel le faltan columnas requeridas: {', '.join(faltantes)}"
+            "El Excel no tiene columnas de identificación: se requiere 'Correo' o 'Usuario'."
         )
+
+    # Garantizar columnas útiles para login/registro (ausentes -> vacías).
+    for col in (*COLUMNAS_ESPERADAS, "Modo", "Proxy"):
+        if col not in df.columns:
+            df[col] = "login" if col == "Modo" else ""
+
+    df = df.fillna("")
+    df["Modo"] = (
+        df["Modo"].astype(str).str.strip().str.lower().replace("", "login")
+    )
+
+    n_reg = int((df["Modo"] == "registro").sum())
+    n_log = int((df["Modo"] == "login").sum())
+    log.exito(f"Cargadas {len(df)} cuenta(s). Registros: {n_reg} | Logins: {n_log}")
     return df
+
+
+def generar_reporte_resumen(df: pd.DataFrame) -> dict:
+    """Estadísticas rápidas del DataFrame de cuentas (para el dashboard)."""
+    modo = df.get("Modo", pd.Series(dtype=str)).astype(str)
+    proxy = df.get("Proxy", pd.Series(dtype=str)).astype(str).str.strip()
+    saldo = pd.to_numeric(df.get("Saldo", pd.Series(dtype=float)), errors="coerce")
+    return {
+        "total": len(df),
+        "registros": int((modo == "registro").sum()),
+        "logins": int((modo == "login").sum()),
+        "con_proxy": int((proxy != "").sum()),
+        "saldo_promedio": float(saldo.mean()) if saldo.notna().any() else 0.0,
+    }
+
+
+def generar_reporte_final(ruta: str = ARCHIVO_HISTORIAL) -> dict:
+    """
+    Resumen agregado de la corrida, leído del historial CSV.
+
+    Robusto ante los formatos reales del historial:
+      - 'Estado' usa etiquetas como 'exitosa'/'error'/'fallo_registro'/'login_fallido'.
+      - El modo (registro/login) vive en 'Detalle' ("Modo: registro"), no en 'Estado'.
+      - 'Limitada' se guarda como texto/bool; 'Saldo' puede traer valores no numéricos.
+
+    Devuelve un dict listo para imprimir o mostrar en el dashboard.
+    """
+    if not os.path.exists(ruta):
+        return {"mensaje": "No hay historial aún."}
+    try:
+        df = pd.read_csv(ruta)
+    except Exception:  # noqa: BLE001
+        return {"mensaje": "No se pudo leer el historial."}
+    if df.empty:
+        return {"mensaje": "Historial vacío."}
+
+    estado = df.get("Estado", pd.Series(dtype=str)).astype(str).str.lower()
+    detalle = df.get("Detalle", pd.Series(dtype=str)).astype(str).str.lower()
+    verificada = df.get("Verificada", pd.Series(dtype=str)).astype(str).str.lower()
+    limitada = df.get("Limitada", pd.Series(dtype=str)).astype(str).str.lower()
+    saldo = pd.to_numeric(df.get("Saldo", pd.Series(dtype=float)), errors="coerce").fillna(0)
+
+    es_registro = detalle.str.contains("modo: registro", na=False)
+    es_exitosa = estado.eq("exitosa")
+
+    return {
+        "Total procesadas": len(df),
+        "Exitosas": int(es_exitosa.sum()),
+        "Fallidas": int(estado.str.contains("error|fallo|fallid|rechaz", na=False).sum()),
+        "Registros exitosos": int((es_registro & es_exitosa).sum()),
+        "Verificadas": int(verificada.isin(["si", "sí", "yes", "true"]).sum()),
+        "Limitadas": int(limitada.isin(["true", "si", "sí", "1", "limitada"]).sum()),
+        "Saldo total": round(float(saldo.sum()), 2),
+    }
+
+
+def imprimir_reporte_final(ruta: str = ARCHIVO_HISTORIAL) -> dict:
+    """Calcula generar_reporte_final y lo pinta en el log con formato legible."""
+    reporte = generar_reporte_final(ruta)
+    log.info("=" * 50)
+    log.info("REPORTE FINAL DE LA CORRIDA")
+    log.info("=" * 50)
+    for clave, valor in reporte.items():
+        log.info(f"  {clave}: {valor}")
+    log.info("=" * 50)
+    return reporte
 
 
 def _puerto_de_fila(fila: pd.Series) -> int:
