@@ -6,3 +6,7 @@ altair
 streamlit
 playwright-stealth
 python-dotenv
+fastapi
+uvicorn[standard]
+python-multipart
+httpx
