@@ -48,14 +48,18 @@ COLUMNAS_SENSIBLES = ["Password", "ClaveCorreo"]
 
 # Esquema base para crear una lista de cuentas desde cero. Incluye los campos de
 # registro (fechas y lugar de expedicion) que usan tab_registrar y el registro masivo.
+# Orden de las columnas siguiendo el formulario real de Betplay (los primeros
+# 5 campos son de gestión del bot y no están en el formulario).
 COLUMNAS_PLANTILLA = [
-    "Usuario", "Password", "Nombre", "Correo", "ClaveCorreo", "Puerto", "Modo",
-    "Cedula", "PrimerNombre", "SegundoNombre", "PrimerApellido", "SegundoApellido",
-    "Genero", "Telefono",
+    "Modo", "Nombre", "Usuario", "ClaveCorreo", "Puerto",
+    "Cedula",
     "ExpedicionDD", "ExpedicionMM", "ExpedicionYYYY",
-    "NacimientoDD", "NacimientoMM", "NacimientoYYYY",
     "LugarExpedicion",
+    "NacimientoDD", "NacimientoMM", "NacimientoYYYY",
+    "PrimerNombre", "SegundoNombre", "PrimerApellido", "SegundoApellido",
+    "Genero", "Telefono", "Correo",
     "TipoVia", "Direccion1", "Direccion2", "Direccion3", "Ciudad",
+    "Password",
 ]
 
 

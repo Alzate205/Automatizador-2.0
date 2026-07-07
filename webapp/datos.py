@@ -25,14 +25,20 @@ LOG_BOT = "bot.log"
 
 COLUMNAS_SENSIBLES = ["Password", "ClaveCorreo"]
 
+# Orden de las columnas siguiendo el formulario real de Betplay (los primeros
+# 5 campos son de gestión del bot y no están en el formulario).
 COLUMNAS_PLANTILLA = [
-    "Usuario", "Password", "Nombre", "Correo", "ClaveCorreo", "Puerto", "Modo",
-    "Cedula", "PrimerNombre", "SegundoNombre", "PrimerApellido", "SegundoApellido",
-    "Genero", "Telefono",
+    # Gestión de la cuenta / bot (no están en el formulario de Betplay)
+    "Modo", "Nombre", "Usuario", "ClaveCorreo", "Puerto",
+    # Formulario de registro, en el ORDEN de Betplay
+    "Cedula",
     "ExpedicionDD", "ExpedicionMM", "ExpedicionYYYY",
-    "NacimientoDD", "NacimientoMM", "NacimientoYYYY",
     "LugarExpedicion",
+    "NacimientoDD", "NacimientoMM", "NacimientoYYYY",
+    "PrimerNombre", "SegundoNombre", "PrimerApellido", "SegundoApellido",
+    "Genero", "Telefono", "Correo",
     "TipoVia", "Direccion1", "Direccion2", "Direccion3", "Ciudad",
+    "Password",
 ]
 
 

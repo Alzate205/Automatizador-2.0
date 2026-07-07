@@ -1,13 +1,18 @@
 const $ = (s) => document.querySelector(s);
 
 const COLUMNAS_SENSIBLES = ['Password', 'ClaveCorreo'];
+// Orden de las columnas siguiendo el formulario real de Betplay (los primeros
+// 5 son de gestión del bot y no están en el formulario).
 const COLUMNAS_BASE = [
-  'Usuario', 'Password', 'Nombre', 'Correo', 'ClaveCorreo', 'Puerto', 'Modo',
-  'Cedula', 'PrimerNombre', 'SegundoNombre', 'PrimerApellido', 'SegundoApellido',
-  'Genero', 'Telefono',
+  'Modo', 'Nombre', 'Usuario', 'ClaveCorreo', 'Puerto',
+  'Cedula',
   'ExpedicionDD', 'ExpedicionMM', 'ExpedicionYYYY',
-  'NacimientoDD', 'NacimientoMM', 'NacimientoYYYY', 'LugarExpedicion',
+  'LugarExpedicion',
+  'NacimientoDD', 'NacimientoMM', 'NacimientoYYYY',
+  'PrimerNombre', 'SegundoNombre', 'PrimerApellido', 'SegundoApellido',
+  'Genero', 'Telefono', 'Correo',
   'TipoVia', 'Direccion1', 'Direccion2', 'Direccion3', 'Ciudad',
+  'Password',
 ];
 
 function escaparHtml(s) {
@@ -205,10 +210,12 @@ function pintarTabla(filas) {
 
 async function cargarCuentas() {
   const d = await (await fetch('/api/cuentas')).json();
-  _colsCuentas = (d.columnas && d.columnas.length) ? d.columnas.slice() : COLUMNAS_BASE.slice();
-  // Garantiza que las columnas de la plantilla (incl. SegundoNombre/SegundoApellido)
-  // aparezcan aunque el archivo sea viejo y no las traiga.
-  for (const c of COLUMNAS_BASE) if (!_colsCuentas.includes(c)) _colsCuentas.push(c);
+  const enArchivo = (d.columnas && d.columnas.length) ? d.columnas : [];
+  // Mostramos SIEMPRE en el orden del formulario de Betplay (COLUMNAS_BASE), sin
+  // importar en qué orden esté guardado el archivo; las columnas extra que traiga
+  // el archivo (y no estén en la plantilla) se muestran al final.
+  _colsCuentas = COLUMNAS_BASE.slice();
+  for (const c of enArchivo) if (!_colsCuentas.includes(c)) _colsCuentas.push(c);
   pintarTabla(d.filas || []);
 }
 
