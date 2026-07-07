@@ -42,12 +42,43 @@ from auditor import log
 # CONFIGURACIÓN POR DEFECTO (placeholders editables)
 # ---------------------------------------------------------------------------
 
-SERVIDOR_IMAP = "imap.gmail.com"   # p. ej. imap.gmail.com, outlook.office365.com
+SERVIDOR_IMAP = "imap.gmail.com"   # respaldo si no se detecta por dominio
 PUERTO_IMAP = 993                  # IMAP sobre SSL
 REMITENTE_OBJETIVO = "noreply@ejemplo.com"
 
 # Patrón de 6 dígitos continuos (código de verificación típico).
 PATRON_CODIGO = r"\b(\d{6})\b"
+
+# Servidor IMAP según el dominio del correo (los proveedores más comunes).
+IMAP_POR_DOMINIO = {
+    "gmail.com": "imap.gmail.com",
+    "googlemail.com": "imap.gmail.com",
+    "outlook.com": "outlook.office365.com",
+    "hotmail.com": "outlook.office365.com",
+    "live.com": "outlook.office365.com",
+    "msn.com": "outlook.office365.com",
+    "yahoo.com": "imap.mail.yahoo.com",
+    "yahoo.es": "imap.mail.yahoo.com",
+    "icloud.com": "imap.mail.me.com",
+    "me.com": "imap.mail.me.com",
+    "aol.com": "imap.aol.com",
+    "zoho.com": "imap.zoho.com",
+}
+
+
+def servidor_imap_por_correo(correo: str, por_defecto: str = SERVIDOR_IMAP) -> str:
+    """
+    Devuelve el servidor IMAP según el dominio del correo.
+
+    Usa el mapa de proveedores conocidos; si el dominio no está, intenta la
+    convención común `imap.<dominio>`; si no hay dominio válido, usa `por_defecto`.
+    """
+    dominio = str(correo or "").strip().rsplit("@", 1)[-1].lower()
+    if dominio in IMAP_POR_DOMINIO:
+        return IMAP_POR_DOMINIO[dominio]
+    if dominio and "." in dominio:
+        return f"imap.{dominio}"
+    return por_defecto
 
 
 # ---------------------------------------------------------------------------
@@ -92,7 +123,7 @@ def extraer_codigo_verificacion(
     usuario: str,
     password: str,
     remitente: str = REMITENTE_OBJETIVO,
-    servidor: str = SERVIDOR_IMAP,
+    servidor: str | None = None,
     puerto: int = PUERTO_IMAP,
     patron: str = PATRON_CODIGO,
 ) -> str | None:
@@ -100,11 +131,15 @@ def extraer_codigo_verificacion(
     Conecta por IMAP/SSL, busca el correo NO LEÍDO más reciente del remitente
     indicado y extrae el primer código que coincida con `patron`.
 
-    Devuelve el código (str) o None si no hay correo, no hay código o falla la
-    conexión/credenciales. Nunca lanza: registra el problema y retorna None.
+    Si `servidor` es None, se detecta automáticamente por el dominio del correo
+    (servidor_imap_por_correo). Devuelve el código (str) o None si no hay correo,
+    no hay código o falla la conexión/credenciales. Nunca lanza: registra el
+    problema y retorna None.
 
     No marca el correo como leído (usa BODY.PEEK), para no alterar el buzón.
     """
+    if servidor is None:
+        servidor = servidor_imap_por_correo(usuario)
     conexion: imaplib.IMAP4_SSL | None = None
     try:
         log.info(f"Conectando por IMAP a {servidor}:{puerto} ...")
@@ -170,7 +205,7 @@ async def extraer_codigo_verificacion_async(
     usuario: str,
     password: str,
     remitente: str = REMITENTE_OBJETIVO,
-    servidor: str = SERVIDOR_IMAP,
+    servidor: str | None = None,
     puerto: int = PUERTO_IMAP,
     patron: str = PATRON_CODIGO,
 ) -> str | None:
@@ -192,7 +227,7 @@ async def esperar_y_extraer_codigo(
     usuario: str,
     password: str,
     remitente: str = REMITENTE_OBJETIVO,
-    servidor: str = SERVIDOR_IMAP,
+    servidor: str | None = None,
     puerto: int = PUERTO_IMAP,
     patron: str = PATRON_CODIGO,
     max_intentos: int = 6,

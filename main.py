@@ -49,7 +49,9 @@ from auditor import (
 from conexion_cdp import construir_endpoint
 from lector_correos import esperar_y_extraer_codigo
 from pausa import pausa_humana
+from preflight import validar_datos
 from procesador_web import process_user
+from rotador_ip import rotar_ip_seguro
 
 # ---------------------------------------------------------------------------
 # CONFIGURACIÓN
@@ -78,6 +80,13 @@ GUARDADO_PARCIAL_CADA = 10   # cada cuantas cuentas se anuncia el guardado parci
 # 15 min: el registro masivo necesita mas margen para rellenar el formulario y
 # resolver el reCAPTCHA a mano antes de continuar.
 TIMEOUT_CAPTCHA_SEG = 900
+
+# Rotacion de IP movil (ADB) ANTES de procesar cada cuenta (login o registro).
+# Es defensiva: sin ADB/celular/root solo avisa y sigue (rotar_ip_seguro nunca lanza).
+ROTAR_IP = True                 # el dashboard puede desactivarlo (cfg["rotar_ip"])
+ROTAR_IP_SEG_MIN = 5.0          # segundos en modo avion (minimo)
+ROTAR_IP_SEG_MAX = 10.0         # segundos en modo avion (maximo)
+ROTAR_IP_VERIFICAR = True       # consultar IP publica antes/despues para avisar si no cambio
 
 
 # ---------------------------------------------------------------------------
@@ -217,6 +226,26 @@ async def procesar_fila(row, perfil_id: int, tareas: set, apuesta_cfg: dict) -> 
     modo = "registro" if str(row.get("Modo", "")).strip().lower() == "registro" else "login"
     etiqueta = nombre or email or f"fila_{perfil_id}"
 
+    # Usuario de LOGIN en Betplay: es la cédula ("Usuario / Cédula"). Si la fila
+    # no trae Cédula, caemos al Correo/Usuario. (El correo se sigue usando para el
+    # 2FA por IMAP, que es independiente de con qué se inicia sesión.)
+    cedula = str(row.get("Cedula", "") or "").strip()
+    usuario_login = cedula or str(email)
+
+    # Rotacion de IP movil ANTES de tocar el navegador (login o registro). Bloqueante,
+    # asi que va en un hilo para no bloquear el event loop. Defensiva: nunca lanza.
+    if ROTAR_IP:
+        log.info(f"[{etiqueta}] Rotando IP movil (ADB) antes de procesar...")
+        control.escribir_estado(fase="rotando_ip", mensaje="Rotando IP movil (modo avion)")
+        await asyncio.to_thread(
+            rotar_ip_seguro,
+            ROTAR_IP_SEG_MIN,
+            ROTAR_IP_SEG_MAX,
+            None,
+            None,
+            ROTAR_IP_VERIFICAR,
+        )
+
     log.info(f"[{etiqueta}] Preparando navegador... (modo: {modo})")
     puerto, endpoint = await _resolver_endpoint(row, perfil_id)
     log.info(f"[{etiqueta}] Endpoint CDP: {endpoint}")
@@ -235,7 +264,7 @@ async def procesar_fila(row, perfil_id: int, tareas: set, apuesta_cfg: dict) -> 
 
     resultado = await process_user(
         cdp_endpoint=endpoint,
-        username=str(email),
+        username=usuario_login,
         password=password,
         nombre=nombre,
         code_provider=code_provider,
@@ -334,13 +363,16 @@ async def main() -> None:
 
     # Config de la corrida (la escribe el dashboard); por defecto si no existe.
     cfg = control.leer_config()
-    global USAR_GESTOR_PERFILES
+    global USAR_GESTOR_PERFILES, ROTAR_IP
     USAR_GESTOR_PERFILES = bool(cfg.get("usar_gestor", USAR_GESTOR_PERFILES))
     pausa_min = float(cfg.get("pausa_min", PAUSA_MIN_MINUTOS))
     pausa_max = float(cfg.get("pausa_max", PAUSA_MAX_MINUTOS))
     filtro_modo = str(cfg.get("filtro_modo", "todo")).strip().lower()
     tareas = set(cfg.get("tareas", ["apuesta_maxima", "bonos"]))
     apuesta_cfg = cfg.get("apuesta", {"modo": "fijo", "valor": 0})
+    # Rotación de IP móvil (ADB) ANTES de cada cuenta (login o registro). Automática
+    # por defecto; el dashboard puede desactivarla con cfg["rotar_ip"] = False.
+    ROTAR_IP = bool(cfg.get("rotar_ip", ROTAR_IP))
     # Seleccion explicita de cuentas desde el dashboard: lista de Correo/Usuario.
     # Vacia o ausente = procesar todas (comportamiento previo).
     seleccionadas = {str(x).strip() for x in (cfg.get("cuentas_seleccionadas") or []) if str(x).strip()}
@@ -367,6 +399,19 @@ async def main() -> None:
 
     # Rotacion automatica de proxies: asigna proxies.txt a las filas sin proxy.
     df = cargar_y_asignar_proxies(df)
+
+    # Preflight (red de seguridad): si no hay nada procesable, abortamos antes de
+    # gastar intentos. Los avisos no bloquean (las filas malas se omiten luego).
+    pf_errores, pf_avisos = validar_datos(df, filtro_modo)
+    for aviso in pf_avisos:
+        log.warning(f"[preflight] {aviso}")
+    if pf_errores:
+        for err in pf_errores:
+            log.error(f"[preflight] {err}")
+        control.escribir_estado(
+            estado="error", mensaje="Preflight fallido: " + " | ".join(pf_errores)
+        )
+        return
 
     control.escribir_estado(total=len(df))
     if progreso > 0:
@@ -427,6 +472,7 @@ async def main() -> None:
             resumen[estado_cuenta] = resumen.get(estado_cuenta, 0) + 1
 
             df.at[idx, "Saldo"] = resultado.get("saldo", 0.0)
+            df.at[idx, "Saldo_Retirable"] = resultado.get("saldo_retirable", 0.0)
             df.at[idx, "Verificada"] = resultado.get("verificada", "desconocido")
             df.at[idx, "Limitada"] = resultado.get("limitada", False)
             df.at[idx, "Bono"] = resultado.get("bono", "")
@@ -442,6 +488,9 @@ async def main() -> None:
             control.escribir_estado(resumen=resumen)
             if (idx + 1) % GUARDADO_PARCIAL_CADA == 0:
                 log.info(f"Guardado parcial: {idx + 1}/{len(df)} cuentas -> {EXCEL_OUTPUT}")
+
+            # (La rotación de IP se hace ahora al INICIO de cada cuenta en
+            # procesar_fila, no aquí, para cubrir login y registro por igual.)
 
             # Pausa humana larga entre cuentas (no despues de la ultima).
             if idx < len(df) - 1 and not control.hay_senal_detener():

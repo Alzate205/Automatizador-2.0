@@ -406,6 +406,15 @@ def tab_control() -> None:
         pausa_min = p1.number_input("Pausa min (min)", min_value=0.0, value=4.0, step=0.5)
         pausa_max = p2.number_input("Pausa max (min)", min_value=0.0, value=12.0, step=0.5)
 
+        st.markdown("**Rotacion de IP movil (ADB / celular por USB)**")
+        rotar_ip = st.checkbox(
+            "Rotar IP antes de cada cuenta (login o registro)", value=True,
+            help="Antes de procesar cada cuenta: activa modo avion 5-10s y reactiva "
+                 "datos moviles para obtener IP nueva. Requiere celular Android por USB "
+                 "con depuracion USB y ADB instalado. Si no hay celular/ADB, se omite "
+                 "automaticamente sin fallar.",
+        )
+
     tareas = []
     if t_bonos:
         tareas.append("bonos")
@@ -416,9 +425,23 @@ def tab_control() -> None:
     if t_ap_saldo:
         tareas.append("apostar_saldo")
 
+    # --- Preflight: valida datos y entorno antes de permitir iniciar ---
+    from preflight import validar_datos, chromium_disponible
+
+    errores, avisos = validar_datos(leer_excel(RUTA_EXCEL), filtro)
+    for msg in errores:
+        st.error(msg)
+    for msg in avisos:
+        st.warning(msg)
+    if usar_gestor and not chromium_disponible():
+        errores.append("Chromium no está instalado (ejecuta: playwright install chromium).")
+        st.error("Chromium de Playwright no encontrado. Ejecuta: `playwright install chromium`.")
+    if not errores and not avisos:
+        st.caption("Preflight OK: la lista tiene cuentas procesables.")
+
     # --- Botones de control ---
     b1, b2, b3 = st.columns(3)
-    if b1.button("Iniciar", type="primary", disabled=activo):
+    if b1.button("Iniciar", type="primary", disabled=activo or bool(errores)):
         iniciar_bot({
             "filtro_modo": filtro,
             "usar_gestor": bool(usar_gestor),
@@ -427,6 +450,7 @@ def tab_control() -> None:
             "tareas": tareas,
             "apuesta": {"modo": modo_monto, "valor": float(valor_monto)},
             "cuentas_seleccionadas": cuentas_sel,
+            "rotar_ip": bool(rotar_ip),
         })
         st.rerun()
 

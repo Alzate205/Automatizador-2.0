@@ -24,9 +24,56 @@ Pipeline funcional de creación masiva + verificación, controlado desde el pane
 
 ### Pendientes menores de Fase 1 (afinar con datos reales)
 
-- [ ] Ajustar `INDICADORES_REGISTRO_OK/ERROR` con los textos/URLs reales que muestre
-      Betplay al completar/rechazar un registro (hoy son heurísticas genéricas).
-- [ ] Validar los selectores reales del formulario de registro contra el sitio en vivo.
+- [x] Clasificación de registro anclada en señales reales de Betplay:
+      - **Rechazo**: "El correo ya se encuentra en uso" (detección temprana en
+        `_verificar_celular` + indicador en `INDICADORES_REGISTRO_ERROR`).
+      - **Éxito**: llegar al paso de verificación de celular y validar el código
+        (`registro_ok`). Si el correo estuviera en uso, nunca se llega a ese paso.
+      - `INDICADORES_REGISTRO_OK` queda como respaldo para cuando no hay lectura de
+        código (p. ej. sin `ClaveCorreo`).
+- [x] Validar los selectores reales del formulario de registro contra el sitio en vivo.
+      Se migró todo el formulario a los `formcontrolname` reales de Betplay (Angular):
+      documentType, documentNumber, expedition/born Day/Month/Year, expeditionPlace,
+      firstName(2), lastName(2), gender, mobilePhoneNumber, email, addressType,
+      address1/2/3, cityAddress, password, cnfPassword, ludopath, pep, checkboxes y el
+      botón `.betplaycaptcha` "Completar Registro". Las fechas, género, tipo de vía,
+      ludopatía y PEP son `<select>` (van por value, no por tecleo).
+- [x] Verificación de celular post-registro: campo `verificationCode`, código leído
+      del correo (patrón 6 díg.) y enviado con `input[type=submit][value="Validar"]`.
+- [x] Flujo de LOGIN y lectura con selectores reales:
+      - Login por **cédula** (`input#userName`, `input#password`, `#btnLoginPrimary`);
+        `main.py` usa `Cedula` como usuario (fallback Correo/Usuario).
+      - Saldo **total** (`td.balance-td`) y **retirable** (`<td>` hermano) → columna
+        `Saldo_Retirable`.
+      - Límite diario real (`.limit-value`): limitada si el tope < $10.000.000
+        (antes la lógica estaba invertida).
+      - Verificada = **no limitada**.
+      - Bonos por marcador negativo real ("No tienes bonos actualmente").
+      - Navegación a Límites/Bonos por **clics** ("Mi cuenta" → opción) con respaldo URL.
+- [x] Apuesta con selectores reales de **Kambi** (sportsbook de Betplay):
+      Deportes (`a.section-title`) → cuota (`button[data-outcome-id]` + `.original-odds`,
+      rango 3-6 para bono) → cupón (`mod-KambiBC-*`) → monto (`input.mod-KambiBC-js-stake-input`)
+      → **pausa** para confirmación manual. Busca en iframes (Kambi corre embebido).
+
+- [x] Filtro temporal de la apuesta: solo partidos de **hoy/mañana** en la franja
+      **tarde-noche** (18:00–23:00, incluye ~8 p. m.). `_evento_en_ventana` parsea la
+      fecha/hora (`EventDate__TimeWrapper`, día y hora en spans separados, formato
+      "06:00 p. m.") y `_elegir_cuota` descarta los partidos fuera de la ventana.
+      Configurable: `APUESTA_HORA_MIN/MAX`, `APUESTA_SOLO_HOY_MANANA`.
+
+- [x] Red de seguridad previa al registro (`_validar_datos_registro`): omite la fila
+      SIN tocar el formulario si faltan datos obligatorios (Cédula, nombres, correo,
+      contraseña) o si la contraseña no cumple el patrón de Betplay. Evita gastar el
+      intento + la verificación por SMS/correo en filas inservibles.
+- [x] Login 2FA con el campo real `verificationCode` + botón "Validar".
+
+### Por confirmar en pruebas en vivo
+
+- [ ] Si el cupón/cuotas de Kambi están en iframe, `_frame_con` ya los busca; validar.
+- [ ] Confirmar que los spans `EventDate__TimeWrapper` cuelgan de un ancestro
+      `EventListItem` (así los ubica `_cuota_en_horario`); si no, ajustar el ancestro.
+- [ ] Confirmar textos exactos de navegación "Mi cuenta"/"Deportes" (si el clic falla,
+      cae a URL / se registra en el log).
 
 ---
 
