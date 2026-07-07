@@ -111,7 +111,10 @@ def lineas_log(ruta: str, desde: int = 0) -> dict:
 
 
 def _limpiar_nan(df: pd.DataFrame) -> pd.DataFrame:
-    return df.where(pd.notna(df), None)
+    # astype(object) primero: en columnas float64, poner None vuelve a NaN (y NaN
+    # no es JSON-serializable). Convertir a object permite guardar None de verdad.
+    obj = df.astype(object)
+    return obj.where(pd.notna(obj), None)
 
 
 def cuentas_como_dict() -> dict:
