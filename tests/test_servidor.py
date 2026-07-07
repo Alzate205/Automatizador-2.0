@@ -82,6 +82,16 @@ def test_cuentas_importar(tmp_path, monkeypatch):
     assert c.get("/api/cuentas").json()["filas"][0]["Usuario"] == "x@y.com"
 
 
+def test_cuentas_exportar(tmp_path, monkeypatch):
+    c = _client(tmp_path, monkeypatch)
+    c.post("/api/cuentas", json={"filas": [{"Usuario": "a@b.com", "Modo": "login"}]})
+    r = c.get("/api/cuentas/exportar")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith(
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    assert len(r.content) > 0
+
+
 def test_resultados(tmp_path, monkeypatch):
     pd.DataFrame({"Usuario": ["a"], "Estado": ["exitosa"], "Saldo": [500],
                   "Verificada": ["si"], "Limitada": [False],

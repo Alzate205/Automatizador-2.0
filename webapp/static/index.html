@@ -1,1 +1,103 @@
-<!doctype html><title>ok</title>
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Automatizador Betplay</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header id="cabecera">
+    <h1>Bot Verificador Betplay</h1>
+    <span id="contador-cuentas">0 cuentas cargadas</span>
+    <nav id="nav">
+      <button data-sec="control" class="activo">Control</button>
+      <button data-sec="cuentas">Cuentas</button>
+      <button data-sec="estadisticas">Estadísticas</button>
+    </nav>
+  </header>
+
+  <main>
+    <!-- CONTROL -->
+    <section id="seccion-control" class="seccion activa">
+      <aside id="sidebar">
+        <h2>Acciones</h2>
+        <button id="btn-iniciar" class="accion primaria">Iniciar</button>
+        <button id="btn-detener" class="accion" disabled>Detener</button>
+        <button id="btn-continuar" class="accion continuar" disabled>Continuar</button>
+        <button id="btn-forzar" class="accion peligro">Forzar parada</button>
+        <hr>
+        <h3>Tareas</h3>
+        <label><input type="checkbox" id="t-bonos" checked> Verificar bonos</label>
+        <label><input type="checkbox" id="t-limite" checked> Verificar límite</label>
+        <label><input type="checkbox" id="t-apbono"> Apostar bono</label>
+        <label><input type="checkbox" id="t-apsaldo"> Apostar saldo</label>
+        <hr>
+        <h3>Monto apuesta</h3>
+        <select id="monto-modo">
+          <option value="fijo">Fijo</option>
+          <option value="porcentaje">Porcentaje</option>
+        </select>
+        <input type="number" id="monto-valor" value="2000" step="500">
+        <hr>
+        <h3>Pausas (min)</h3>
+        <label>Mín <input type="number" id="pausa-min" value="4" step="0.5" min="0"></label>
+        <label>Máx <input type="number" id="pausa-max" value="12" step="0.5" min="0"></label>
+        <hr>
+        <h3>Rotación de IP</h3>
+        <label><input type="checkbox" id="rotar-ip"> Rotar IP entre cuentas</label>
+        <label><input type="checkbox" id="rotar-solo-reg" checked> Solo tras registros</label>
+        <hr>
+        <h3>Otros</h3>
+        <label>Filtro modo
+          <select id="filtro-modo">
+            <option value="todo">Todo</option>
+            <option value="login">Login</option>
+            <option value="registro">Registro</option>
+          </select>
+        </label>
+        <label><input type="checkbox" id="usar-gestor" checked> Usar gestor de perfiles</label>
+      </aside>
+      <div id="panel">
+        <div id="cabecera-estado">Inactivo</div>
+        <div id="progreso-wrap"><div id="barra-progreso"></div></div>
+        <pre id="consola"></pre>
+      </div>
+    </section>
+
+    <!-- CUENTAS -->
+    <section id="seccion-cuentas" class="seccion">
+      <div class="barra-acciones">
+        <button id="btn-guardar-cuentas" class="accion primaria compacta">Guardar cambios</button>
+        <button id="btn-agregar-fila" class="accion compacta">+ Agregar fila</button>
+        <label class="inline">Plantilla N
+          <input type="number" id="plantilla-n" value="10" min="1" style="width:70px">
+        </label>
+        <button id="btn-plantilla" class="accion compacta">Generar plantilla</button>
+        <label class="importar accion compacta">Importar Excel
+          <input type="file" id="importar-archivo" accept=".xlsx" hidden>
+        </label>
+        <button id="btn-exportar-cuentas" class="accion compacta">Descargar Excel</button>
+        <label class="inline"><input type="checkbox" id="ver-sensibles"> Mostrar contraseñas</label>
+        <span id="estado-cuentas" class="estado-inline"></span>
+      </div>
+      <div id="tabla-cuentas"></div>
+    </section>
+
+    <!-- ESTADISTICAS -->
+    <section id="seccion-estadisticas" class="seccion">
+      <div id="tarjetas-metricas" class="tarjetas"></div>
+      <div class="graficas">
+        <div class="grafica"><h3>Estados de registro</h3><div id="g-registro"></div></div>
+        <div class="grafica"><h3>Verificadas</h3><div id="g-verificadas"></div></div>
+        <div class="grafica"><h3>Saldo por estado</h3><div id="g-saldo"></div></div>
+      </div>
+      <button id="btn-exportar" class="accion compacta">Descargar Excel</button>
+      <div id="tabla-resultados"></div>
+    </section>
+  </main>
+
+  <script src="/graficas.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

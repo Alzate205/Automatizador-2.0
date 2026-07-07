@@ -1,0 +1,54 @@
+:root{
+  --bg:#12151c; --panel:#1b1f2a; --panel2:#232838; --txt:#e6e9f0; --muted:#8a92a6;
+  --azul:#3b82f6; --verde:#22c55e; --amarillo:#eab308; --rojo:#ef4444; --borde:#2b3142;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--txt);font-family:Segoe UI,system-ui,sans-serif;font-size:14px}
+#cabecera{display:flex;align-items:center;gap:20px;padding:12px 20px;background:var(--panel);border-bottom:1px solid var(--borde)}
+#cabecera h1{font-size:18px;margin:0;color:var(--azul)}
+#contador-cuentas{color:var(--verde);margin-left:auto}
+#nav{display:flex;gap:6px}
+#nav button{background:transparent;color:var(--muted);border:none;padding:8px 14px;border-radius:6px;cursor:pointer}
+#nav button.activo{background:var(--panel2);color:var(--txt)}
+.seccion{display:none;padding:16px}
+.seccion.activa{display:block}
+#seccion-control.activa{display:flex;gap:16px;height:calc(100vh - 120px)}
+#sidebar{width:240px;background:var(--panel);border:1px solid var(--borde);border-radius:10px;padding:14px;overflow:auto;flex-shrink:0}
+#sidebar h2{font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:0 0 10px}
+#sidebar h3{font-size:12px;color:var(--muted);margin:14px 0 6px}
+#sidebar label{display:block;margin:6px 0;color:var(--txt)}
+#sidebar input[type=number],#sidebar select{background:var(--panel2);color:var(--txt);border:1px solid var(--borde);border-radius:6px;padding:4px 6px}
+#sidebar hr{border:none;border-top:1px solid var(--borde);margin:12px 0}
+.accion{display:block;width:100%;margin:6px 0;padding:10px;border:none;border-radius:8px;background:var(--panel2);color:var(--txt);cursor:pointer;font-weight:600}
+.accion:hover{filter:brightness(1.15)}
+.accion:disabled{opacity:.4;cursor:not-allowed}
+.accion.primaria{background:var(--azul)}
+.accion.continuar{background:var(--verde)}
+.accion.peligro{background:var(--rojo)}
+.accion.compacta{display:inline-block;width:auto;margin:0;padding:8px 14px}
+#panel{flex:1;display:flex;flex-direction:column;background:var(--panel);border:1px solid var(--borde);border-radius:10px;overflow:hidden}
+#cabecera-estado{padding:10px 14px;border-bottom:1px solid var(--borde);font-weight:600}
+#progreso-wrap{height:8px;background:var(--panel2)}
+#barra-progreso{height:100%;width:0;background:var(--verde);transition:width .3s}
+#consola{flex:1;margin:0;padding:14px;overflow:auto;font-family:Consolas,monospace;font-size:13px;line-height:1.5;white-space:pre-wrap}
+.log-info{color:var(--txt)} .log-exito{color:var(--verde)} .log-aviso{color:var(--amarillo)} .log-error{color:var(--rojo)}
+.barra-acciones{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
+.barra-acciones label.inline{display:flex;align-items:center;gap:6px;color:var(--muted)}
+.importar{cursor:pointer;text-align:center}
+.estado-inline{color:var(--verde);font-size:13px;margin-left:auto}
+.tarjetas{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:18px}
+.tarjeta{background:var(--panel);border:1px solid var(--borde);border-radius:10px;padding:16px;min-width:150px}
+.tarjeta .valor{font-size:26px;font-weight:700}
+.tarjeta .etq{color:var(--muted);font-size:12px}
+.graficas{display:flex;gap:16px;flex-wrap:wrap;margin-bottom:18px}
+.grafica{background:var(--panel);border:1px solid var(--borde);border-radius:10px;padding:14px;flex:1;min-width:280px}
+.grafica h3{margin:0 0 10px;font-size:14px;color:var(--muted)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{border:1px solid var(--borde);padding:6px 8px;text-align:left;white-space:nowrap}
+th{background:var(--panel2);position:sticky;top:0}
+td input{width:100%;min-width:90px;background:transparent;border:none;color:var(--txt)}
+td input:focus{outline:1px solid var(--azul);background:var(--panel2)}
+td.col-borrar{text-align:center;padding:0}
+.btn-borrar{background:transparent;border:none;color:var(--rojo);cursor:pointer;font-size:16px;padding:4px 8px}
+.btn-borrar:hover{filter:brightness(1.3)}
+.tabla-scroll{overflow:auto;max-height:calc(100vh - 200px);border:1px solid var(--borde);border-radius:8px}

@@ -127,6 +127,17 @@ async def api_cuentas_importar(archivo: UploadFile = File(...)):
     return {"ok": True, "guardadas": len(df)}
 
 
+@app.get("/api/cuentas/exportar")
+def api_cuentas_exportar():
+    df = datos.leer_excel(datos.RUTA_EXCEL)
+    contenido = datos.to_excel_bytes(df)
+    return Response(
+        content=contenido,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=cuentas.xlsx"},
+    )
+
+
 # ---------------- API: resultados ----------------
 
 @app.get("/api/resultados")
