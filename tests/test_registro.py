@@ -5,7 +5,27 @@ import preflight
 from procesador_web import (
     _partir_dos, _validar_datos_registro,
     _ciudad_lugar_expedicion, _claves_lugar_expedicion,
+    _coincide_opcion,
 )
+
+
+# ---------------- _coincide_opcion (selección en desplegables) ----------------
+
+def test_coincide_opcion_numeros_exactos():
+    # '1' NO debe casar con '10'/'11' (evita elegir el día equivocado).
+    assert _coincide_opcion("1", ["1"]) is True
+    assert _coincide_opcion("10", ["1"]) is False
+    assert _coincide_opcion("15", ["15"]) is True
+
+
+def test_coincide_opcion_mes_por_nombre():
+    assert _coincide_opcion("Junio", ["06", "6", "junio"]) is True
+    assert _coincide_opcion("Diciembre", ["06", "6", "junio"]) is False
+
+
+def test_coincide_opcion_etiqueta_larga_por_inclusion():
+    assert _coincide_opcion("CL - CALLE", ["CL", "Calle"]) is True
+    assert _coincide_opcion("Cédula de ciudadanía", ["Cedula de ciudadania"]) is True
 
 
 # ---------------- _partir_dos (segundo nombre/apellido) ----------------

@@ -176,22 +176,26 @@ async def human_delay(min_sec: float = 0.8, max_sec: float = 3.0) -> None:
     await pausa_con_jitter(min_sec, jitter_ms=jitter_ms)
 
 
-async def human_type(page, selector: str, text: str, delay_range=(40, 140)) -> bool:
+async def human_type(page, selector, text, delay_range=(90, 240)) -> bool:
     """
-    Escribe el texto carácter a carácter con variabilidad humana.
+    Escribe el texto carácter a carácter con variabilidad humana (lento, para no
+    parecer un bot). `selector` puede ser un string CSS o un Locator ya acotado.
 
-    Devuelve True si pudo escribir, False si el selector no estaba disponible
-    (así el llamador puede decidir si continuar o no).
+    Devuelve True si pudo escribir, False si el selector no estaba disponible.
     """
     try:
-        await page.locator(selector).first.click()
-        await human_delay(0.3, 0.8)
+        loc = page.locator(selector) if isinstance(selector, str) else selector
+        loc = loc.first
+        await loc.scroll_into_view_if_needed(timeout=3000)
+        await loc.click()
+        await human_delay(0.4, 1.0)
         # str(text): tolera valores numéricos (p. ej. Cédula/Teléfono leídos del
         # Excel como int) sin romper el tecleo carácter a carácter.
         for char in str(text):
             await page.keyboard.type(char, delay=random.randint(*delay_range))
-            if random.random() < 0.12:
-                await human_delay(0.15, 0.45)
+            if random.random() < 0.15:
+                await human_delay(0.25, 0.7)  # micro-pausas de "pensar"
+        await human_delay(0.5, 1.3)  # pausa al terminar el campo (más humano)
         return True
     except ERRORES_PW:
         logger.warning(f"No se pudo escribir en: {selector}")
@@ -275,6 +279,18 @@ TIPO_VIA_VALORES = {
 }
 TIPO_VIA_SIGLAS = {"AC", "AK", "AUT", "AV", "CL", "CRV", "DG", "TV", "KM", "CR", "CIR"}
 
+# Etiquetas visibles (para desplegables PERSONALIZADOS donde value != texto).
+DOC_TIPO_LABEL = {
+    "3": "Cedula de ciudadania", "4": "Cedula de extranjeria",
+    "544": "Permiso de proteccion temporal",
+}
+GENERO_LABEL = {"1": "Masculino", "2": "Femenino"}
+_TIPO_VIA_LABEL = {v: k for k, v in TIPO_VIA_VALORES.items()}  # sigla -> nombre
+
+
+def _label_tipo_via(sigla: str) -> str:
+    return _TIPO_VIA_LABEL.get(str(sigla).upper(), "").title()
+
 
 def _valor_genero(datos: Dict[str, Any]) -> str:
     """value del género. Acepta texto ('Masculino'/'F'), el value ('1'/'2') o vacío."""
@@ -334,21 +350,103 @@ def _norm_anio(valor: Any, defecto: str = "") -> str:
         return defecto
 
 
-async def _seleccionar_opcion(page, selector: str, valor: str, etiqueta: str = "") -> bool:
+MESES_NOMBRE = {
+    "01": "enero", "02": "febrero", "03": "marzo", "04": "abril",
+    "05": "mayo", "06": "junio", "07": "julio", "08": "agosto",
+    "09": "septiembre", "10": "octubre", "11": "noviembre", "12": "diciembre",
+}
+
+
+def _coincide_opcion(texto_opcion: str, objetivos: list) -> bool:
+    """True si el texto de la opción coincide con alguno de los objetivos.
+
+    Exacto para valores cortos (días/meses numéricos: '1' no debe casar con '10');
+    por inclusión para etiquetas largas ('calle' dentro de 'cl - calle').
     """
-    Selecciona una <option> por value en un <select> Angular (dispara el evento
-    change que Angular necesita). Devuelve True si pudo, False si no.
+    t = _sin_tildes(texto_opcion)
+    for o in objetivos:
+        o = _sin_tildes(o)
+        if not o:
+            continue
+        if o == t:
+            return True
+        if len(o) >= 3 and (o in t or t in o):
+            return True
+    return False
+
+
+async def _seleccionar_opcion(page, selector: str, valor: str, etiqueta: str = "",
+                              textos=None) -> bool:
     """
-    if not valor:
+    Elige una opción en un desplegable, sea <select> NATIVO o uno PERSONALIZADO
+    (Angular Material, PrimeNG, ng-select, etc.).
+
+    1) Nativo: select_option por value y por label.
+    2) Personalizado: hace CLIC en el control para abrirlo y CLIC en la opción que
+       coincida (por value o por alguna etiqueta de `textos`).
+
+    `valor` es el value de backend (p. ej. '3', '06'); `textos` son las etiquetas
+    visibles aceptables (p. ej. ['Cédula de ciudadanía'] o ['06','6','junio']).
+    Devuelve True si logró seleccionar.
+    """
+    if valor is None or str(valor).strip() == "":
         return False
+    valor = str(valor).strip()
+    textos = [str(t) for t in (textos or []) if str(t).strip()]
     try:
-        await page.locator(selector).first.wait_for(state="visible", timeout=8000)
-        await page.select_option(selector, value=valor)
-        await human_delay(0.4, 1.0)
-        return True
+        ctrl = page.locator(selector).first
+        await ctrl.wait_for(state="visible", timeout=8000)
+        await ctrl.scroll_into_view_if_needed(timeout=3000)
     except ERRORES_PW:
-        logger.warning(f"[{etiqueta}] No se pudo seleccionar value='{valor}' en {selector}")
+        logger.warning(f"[{etiqueta}] Desplegable no visible: {selector}")
         return False
+
+    # 1) <select> NATIVO: por value y por cada etiqueta.
+    for intento in [{"value": valor}] + [{"label": t} for t in textos]:
+        try:
+            await page.select_option(selector, **intento)
+            await human_delay(0.6, 1.4)
+            return True
+        except Exception:  # noqa: BLE001  (no es <select> nativo o el value no existe)
+            pass
+
+    # 2) PERSONALIZADO: abrir el control y hacer clic en la opción.
+    try:
+        await ctrl.click()
+        await human_delay(0.5, 1.2)
+    except ERRORES_PW:
+        pass
+
+    objetivos = [valor] + textos
+    contenedores = [
+        page.get_by_role("option"),
+        page.locator("mat-option, [role='option'], .mat-option, .p-dropdown-item, "
+                     "ng-dropdown-panel .ng-option, .ng-option, ul.dropdown-menu li, "
+                     "li[role='option'], .select2-results__option, option"),
+    ]
+    for loc in contenedores:
+        try:
+            n = await loc.count()
+        except Exception:  # noqa: BLE001
+            continue
+        for i in range(min(n, 80)):
+            op = loc.nth(i)
+            try:
+                if not await op.is_visible():
+                    continue
+                txt = await op.inner_text(timeout=800)
+            except Exception:  # noqa: BLE001
+                continue
+            if _coincide_opcion(txt, objetivos):
+                try:
+                    await op.click(timeout=3000)
+                    await human_delay(0.5, 1.2)
+                    return True
+                except ERRORES_PW:
+                    continue
+
+    logger.warning(f"[{etiqueta}] No se pudo seleccionar '{textos or valor}' en {selector}")
+    return False
 
 
 async def _verificar_celular(
@@ -715,32 +813,42 @@ async def registrar_cuenta(
                     "mensaje": "No se pudo hacer clic en 'Registrarse' (boton no visible)"}
         await human_delay(3, 5)
 
-        # Tipo de documento: <select formcontrolname="documentType"> (por value:
-        # 3=C.C., 4=C.E., 544=PPT). Por defecto Cédula de ciudadanía.
+        # Tipo de documento: SIEMPRE se selecciona (aunque el valor por defecto ya
+        # sea Cédula), porque Angular necesita el evento de selección para validar.
+        val_doc = _valor_tipo_doc(datos)
         await _seleccionar_opcion(
-            page, 'select[formcontrolname="documentType"]', _valor_tipo_doc(datos), etq
+            page, 'select[formcontrolname="documentType"]', val_doc, etq,
+            textos=[DOC_TIPO_LABEL.get(val_doc, "Cedula de ciudadania"),
+                    str(datos.get("TipoDocumento", ""))],
         )
         await human_delay(1, 2)
 
         # Número de identificación (cédula) -> es el usuario de la cuenta Betplay.
         await human_type(page, 'input[formcontrolname="documentNumber"]', datos.get("Cedula", ""))
 
-        # Fecha de expedición: tres <select> (día '1'..'31' SIN cero, mes '01'..'12'
-        # con cero, año '1995'..). Normalizamos lo que venga del Excel a esos values.
-        await _seleccionar_opcion(page, 'select[formcontrolname="expeditionDay"]', _norm_dia(datos.get("ExpedicionDD"), "15"), etq)
-        await _seleccionar_opcion(page, 'select[formcontrolname="expeditionMonth"]', _norm_mes(datos.get("ExpedicionMM"), "06"), etq)
-        await _seleccionar_opcion(page, 'select[formcontrolname="expeditionYear"]', _norm_anio(datos.get("ExpedicionYYYY"), "1995"), etq)
+        # Fecha de expedición: tres desplegables. value = número; texto también
+        # (día/año) o el nombre del mes (por si el desplegable muestra 'Junio').
+        exp_dd = _norm_dia(datos.get("ExpedicionDD"), "15")
+        exp_mm = _norm_mes(datos.get("ExpedicionMM"), "06")
+        exp_yy = _norm_anio(datos.get("ExpedicionYYYY"), "1995")
+        await _seleccionar_opcion(page, 'select[formcontrolname="expeditionDay"]', exp_dd, etq, textos=[exp_dd])
+        await _seleccionar_opcion(page, 'select[formcontrolname="expeditionMonth"]', exp_mm, etq,
+                                  textos=[exp_mm, str(int(exp_mm)), MESES_NOMBRE.get(exp_mm, "")])
+        await _seleccionar_opcion(page, 'select[formcontrolname="expeditionYear"]', exp_yy, etq, textos=[exp_yy])
 
         # Lugar de expedición: AUTOCOMPLETAR (hay ciudades homónimas, p. ej.
         # ARMENIA en Quindío/Antioquia). Escribe la ciudad y hace clic en la opción
         # que coincida con el departamento indicado en LugarExpedicion.
         await _elegir_lugar_expedicion(page, datos.get("LugarExpedicion", "BOGOTA"), etq)
 
-        # Fecha de nacimiento: tres <select> (mismo formato que expedición:
-        # día '1'..'31', mes '01'..'12', año '1908'..'2008').
-        await _seleccionar_opcion(page, 'select[formcontrolname="bornDay"]', _norm_dia(datos.get("NacimientoDD"), "10"), etq)
-        await _seleccionar_opcion(page, 'select[formcontrolname="bornMonth"]', _norm_mes(datos.get("NacimientoMM"), "03"), etq)
-        await _seleccionar_opcion(page, 'select[formcontrolname="bornYear"]', _norm_anio(datos.get("NacimientoYYYY"), "1995"), etq)
+        # Fecha de nacimiento: mismo formato que expedición.
+        nac_dd = _norm_dia(datos.get("NacimientoDD"), "10")
+        nac_mm = _norm_mes(datos.get("NacimientoMM"), "03")
+        nac_yy = _norm_anio(datos.get("NacimientoYYYY"), "1995")
+        await _seleccionar_opcion(page, 'select[formcontrolname="bornDay"]', nac_dd, etq, textos=[nac_dd])
+        await _seleccionar_opcion(page, 'select[formcontrolname="bornMonth"]', nac_mm, etq,
+                                  textos=[nac_mm, str(int(nac_mm)), MESES_NOMBRE.get(nac_mm, "")])
+        await _seleccionar_opcion(page, 'select[formcontrolname="bornYear"]', nac_yy, etq, textos=[nac_yy])
 
         # Nombres: primer nombre (firstName) + segundo nombre (firstName2). Si no
         # viene SegundoNombre y PrimerNombre trae dos palabras, se parte solo.
@@ -759,29 +867,51 @@ async def registrar_cuenta(
         if segundo_apellido:
             await human_type(page, 'input[formcontrolname="lastName2"]', segundo_apellido)
 
-        # Género: <select formcontrolname="gender"> (1=Masculino, 2=Femenino).
-        await _seleccionar_opcion(page, 'select[formcontrolname="gender"]', _valor_genero(datos), etq)
+        # Nacionalidad: SIEMPRE se selecciona (aunque muestre COLOMBIA por defecto).
+        await _seleccionar_opcion(
+            page,
+            'select[formcontrolname="nationality"], select[formcontrolname="nacionality"], '
+            'select[formcontrolname="country"], select[formcontrolname="pais"]',
+            "COLOMBIA", etq, textos=["COLOMBIA", "Colombia"],
+        )
+
+        # Género: 1=Masculino, 2=Femenino.
+        val_gen = _valor_genero(datos)
+        await _seleccionar_opcion(page, 'select[formcontrolname="gender"]', val_gen, etq,
+                                  textos=[GENERO_LABEL.get(val_gen, ""), str(datos.get("Genero", ""))])
 
         # Contacto: teléfono (mobilePhoneNumber, 10 díg.) + correo (email).
         await human_type(page, 'input[formcontrolname="mobilePhoneNumber"]', datos.get("Telefono", ""))
         await human_type(page, 'input[formcontrolname="email"]', datos.get("Correo", ""))
 
-        # Dirección: tipo de vía (<select addressType>) + tres campos + ciudad.
-        await _seleccionar_opcion(page, 'select[formcontrolname="addressType"]', _valor_tipo_via(datos), etq)
+        # Dirección: tipo de vía (desplegable) + tres campos + ciudad.
+        val_via = _valor_tipo_via(datos)
+        await _seleccionar_opcion(page, 'select[formcontrolname="addressType"]', val_via, etq,
+                                  textos=[str(datos.get("TipoVia", "")), _label_tipo_via(val_via)])
         await human_type(page, 'input[formcontrolname="address1"]', datos.get("Direccion1", "26D"))
         await human_type(page, 'input[formcontrolname="address2"]', datos.get("Direccion2", "57D"))
         await human_type(page, 'input[formcontrolname="address3"]', datos.get("Direccion3", "87"))
         await human_type(page, 'input[formcontrolname="cityAddress"]', datos.get("Ciudad", "BOGOTA"))
 
-        # Contraseña + confirmación. OJO: Betplay exige mayúscula, dígito y un signo
-        # de [.;,] (ej. "Betplay2026."); si la clave no cumple, el form no valida.
+        # Contraseña + confirmación. OJO: hay DOS campos 'password' en la página (el
+        # login del header y el del registro); acotamos al FORMULARIO DE REGISTRO
+        # (el que contiene cnfPassword) para no escribir en el login por error.
+        # Betplay exige mayúscula, dígito y un signo [.;,] (ej. "Betplay2026.").
         pwd = datos.get("Password", "")
-        await human_type(page, 'input[formcontrolname="password"]', pwd)
-        await human_type(page, 'input[formcontrolname="cnfPassword"]', pwd)
+        reg_form = page.locator('form:has(input[formcontrolname="cnfPassword"])')
+        if await reg_form.count():
+            campo_pass = reg_form.first.locator('input[formcontrolname="password"]')
+            campo_cnf = reg_form.first.locator('input[formcontrolname="cnfPassword"]')
+        else:
+            # Respaldo: el password del registro es el ÚLTIMO (el del login va primero).
+            campo_pass = page.locator('input[formcontrolname="password"]').last
+            campo_cnf = page.locator('input[formcontrolname="cnfPassword"]').last
+        await human_type(page, campo_pass, pwd)
+        await human_type(page, campo_cnf, pwd)
 
-        # Ludopatía y PEP: ambos <select> a "No" (value 2) por defecto.
-        await _seleccionar_opcion(page, 'select[formcontrolname="ludopath"]', "2", etq)
-        await _seleccionar_opcion(page, 'select[formcontrolname="pep"]', "2", etq)
+        # Interdicto / Ludopatía y PEP: a "No" (value 2) por defecto.
+        await _seleccionar_opcion(page, 'select[formcontrolname="ludopath"]', "2", etq, textos=["No"])
+        await _seleccionar_opcion(page, 'select[formcontrolname="pep"]', "2", etq, textos=["No"])
 
         # Checkboxes (tratamiento de datos, promociones, términos, origen de fondos).
         # Son checkboxes Angular con estilo propio: si el click normal falla por
