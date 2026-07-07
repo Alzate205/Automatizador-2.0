@@ -18,6 +18,8 @@ body{margin:0;background:var(--bg);color:var(--txt);font-family:Segoe UI,system-
 #sidebar h3{font-size:12px;color:var(--muted);margin:14px 0 6px}
 #sidebar label{display:block;margin:6px 0;color:var(--txt)}
 #sidebar input[type=number],#sidebar select{background:var(--panel2);color:var(--txt);border:1px solid var(--borde);border-radius:6px;padding:4px 6px}
+#sidebar select[multiple]{width:100%;padding:2px}
+#sidebar select[multiple] option{padding:3px 4px}
 #sidebar hr{border:none;border-top:1px solid var(--borde);margin:12px 0}
 .accion{display:block;width:100%;margin:6px 0;padding:10px;border:none;border-radius:8px;background:var(--panel2);color:var(--txt);cursor:pointer;font-weight:600}
 .accion:hover{filter:brightness(1.15)}

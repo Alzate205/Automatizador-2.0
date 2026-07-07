@@ -49,7 +49,7 @@ function leerConfig() {
     pausa_max: parseFloat($('#pausa-max').value) || 0,
     tareas,
     apuesta: { modo: $('#monto-modo').value, valor: parseFloat($('#monto-valor').value) || 0 },
-    cuentas_seleccionadas: [],
+    cuentas_seleccionadas: Array.from($('#cuentas-sel').selectedOptions).map(o => o.value),
     rotar_ip: $('#rotar-ip').checked,
     rotar_ip_solo_registro: $('#rotar-solo-reg').checked,
     codigo_manual: $('#codigo-manual').checked,
@@ -131,7 +131,24 @@ async function actualizarContador() {
   try {
     const c = await (await fetch('/api/cuentas')).json();
     $('#contador-cuentas').textContent = (c.filas ? c.filas.length : 0) + ' cuentas cargadas';
+    poblarSelectorCuentas(c.filas || []);
   } catch (e) { /* ídem */ }
+}
+
+// Rellena el selector "Cuentas a procesar" con el Correo o Usuario de cada fila,
+// conservando lo que ya estuviera seleccionado.
+function poblarSelectorCuentas(filas) {
+  const sel = $('#cuentas-sel');
+  if (!sel) return;
+  const seleccionadas = new Set(Array.from(sel.selectedOptions).map(o => o.value));
+  const ids = [];
+  for (const fila of filas) {
+    const id = String(fila.Correo || fila.Usuario || '').trim();
+    if (id && id.toLowerCase() !== 'nan' && !ids.includes(id)) ids.push(id);
+  }
+  sel.innerHTML = ids.map(id =>
+    `<option value="${escaparHtml(id)}"${seleccionadas.has(id) ? ' selected' : ''}>${escaparHtml(id)}</option>`
+  ).join('');
 }
 
 // ============================ SECCIÓN CUENTAS ============================
