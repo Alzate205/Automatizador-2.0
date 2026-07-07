@@ -45,3 +45,38 @@ def test_detener_y_continuar_crean_senales(tmp_path, monkeypatch):
     assert os.path.exists(tmp_path / "senal_detener.flag")
     assert c.post("/api/continuar").status_code == 200
     assert os.path.exists(tmp_path / "senal_continuar.flag")
+
+
+def test_cuentas_get_post(tmp_path, monkeypatch):
+    c = _client(tmp_path, monkeypatch)
+    r = c.post("/api/cuentas", json={"filas": [{"Usuario": "a@b.com", "Modo": "login"}]})
+    assert r.status_code == 200 and r.json()["guardadas"] == 1
+    g = c.get("/api/cuentas")
+    assert g.json()["filas"][0]["Usuario"] == "a@b.com"
+
+
+def test_cuentas_plantilla(tmp_path, monkeypatch):
+    c = _client(tmp_path, monkeypatch)
+    r = c.post("/api/cuentas/plantilla", json={"n": 4})
+    assert r.status_code == 200 and r.json()["guardadas"] == 4
+    assert c.get("/api/cuentas").json()["filas"][0]["Modo"] == "registro"
+
+
+def test_cuentas_registrar(tmp_path, monkeypatch):
+    c = _client(tmp_path, monkeypatch)
+    c.post("/api/cuentas", json={"filas": [{"Usuario": "a@b.com"}]})
+    r = c.post("/api/cuentas/registrar", json={"Usuario": "c@d.com", "Modo": "registro"})
+    assert r.status_code == 200 and r.json()["total"] == 2
+
+
+def test_cuentas_importar(tmp_path, monkeypatch):
+    import io, pandas as pd
+    c = _client(tmp_path, monkeypatch)
+    buf = io.BytesIO()
+    pd.DataFrame({"Usuario": ["x@y.com"]}).to_excel(buf, index=False)
+    buf.seek(0)
+    r = c.post("/api/cuentas/importar",
+               files={"archivo": ("cuentas.xlsx", buf.getvalue(),
+                      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")})
+    assert r.status_code == 200 and r.json()["guardadas"] == 1
+    assert c.get("/api/cuentas").json()["filas"][0]["Usuario"] == "x@y.com"

@@ -21,7 +21,7 @@ Devuelve un dict: {saldo, verificada, limitada, estado, timestamp}.
 import logging
 import random
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 from playwright.async_api import (
@@ -96,15 +96,23 @@ SELECTORES_VERIFICADA = (
 # usuario (más fiable que simular una apuesta). ---
 RUTA_LIMITES = "/menuusuario?optionMenu=1"
 RUTA_BONOS = "/menuusuario?optionMenu=4"
-# Marcadores literales de un tope diario bajo (señal de cuenta limitada).
-# PALABRAS_LIMITE_BETPLAY ya cubre "límite/máximo/...".
-MARCADORES_LIMITE = ("10.000.000", "10000000")
+# Límite diario NORMAL de Betplay ($10.000.000). Una cuenta con un tope MENOR a
+# este está limitada. (Antes el código marcaba 10.000.000 como "limitada", que
+# era justo al revés: ese es el límite sano.)
+LIMITE_DIARIO_NORMAL = 10_000_000
+SEL_LIMITE_DIARIO = (
+    "div.limit-item:has(p.limit-label:has-text('Límite Diario')) p.limit-value"
+)
+# Marcador negativo real de la página de bonos.
+MARCADOR_SIN_BONOS = "no tienes bonos"
 
-# --- Login: selectores y deteccion de credenciales incorrectas ---
+# --- Login: selectores reales de Betplay (Angular) ---
+# El campo de usuario acepta "Usuario / Cédula" (input#userName). Para cuentas
+# creadas por el bot, el usuario ES la cédula (ver registro).
 SEL_LOGIN_BTN = "text=/Iniciar sesión|Iniciar sesion|Ingresar|Login/i"
-SEL_EMAIL = 'input[name*="email" i], input#email, input[placeholder*="correo" i], input[placeholder*="mail" i]'
-SEL_PASS = 'input[name*="password" i], input#password, input[placeholder*="contraseña" i]'
-SEL_SUBMIT = 'button[type="submit"], button:has-text("Ingresar"), button:has-text("Login")'
+SEL_EMAIL = 'input#userName, input[formcontrolname="userName"]'
+SEL_PASS = 'input#password[formcontrolname="password"], input[formcontrolname="password"]'
+SEL_SUBMIT = 'button#btnLoginPrimary, button.betplaycaptcha:has-text("Ingresar"), button[type="submit"]'
 TEXTO_LOGIN_FALLIDO = re.compile(
     r"credencial(es)? (incorrect|invalid)|usuario o contrase|datos incorrect|"
     r"contrase\w+ incorrect|inicio de sesion fallido",
@@ -112,18 +120,39 @@ TEXTO_LOGIN_FALLIDO = re.compile(
 )
 INTENTOS_LOGIN = 2
 
-# --- Apuestas (Apostar Bono / Apostar Saldo) ---
-RUTA_FUTBOL = "/deportes/futbol"
-LIGAS_REGEX = r"Liga BetPlay|Primera A|BetPlay Cup|Colombia"
-SEL_CUOTA = "button, div"           # se filtra por un patron de cuota (1.85, 2.0, ...)
-SEL_MONTO_APUESTA = 'input[placeholder*="Monto" i], input[name*="stake" i], input[type="number"]'
+# --- Apuestas (Betplay usa el sportsbook KAMBI, suele correr en un iframe) ---
+# Navegación a Deportes desde el home.
+SEL_DEPORTES = "a.section-title"            # enlace "Deportes"
+SEL_MENU_HAMBURGUESA = "i.fas.fa-bars"      # menú móvil (respaldo)
 
-# Para apostar el BONO se buscan partidos populares con cuotas medias-altas
-# (3.0 a 6.0): el rollover del bono rinde mejor con cuotas mas altas. Para el
-# saldo real (rango None) se toma la primera cuota disponible.
+# Cuotas: los selectores estables son el atributo data-outcome-id y la clase
+# plana .original-odds (NO las clases con hash de styled-components, que cambian).
+SEL_CUOTA_BTN = "button[data-outcome-id]:has(.original-odds)"
+SEL_CUOTA_VALOR = ".original-odds"
+
+# Cupón (betslip) de Kambi: clases 'mod-KambiBC-*' (estables).
+SEL_BETSLIP = ".mod-KambiBC-betslip-outcome__content"
+SEL_BETSLIP_EVENTO = "a.mod-KambiBC-betslip-outcome__event-link"
+SEL_BETSLIP_PICK = ".mod-KambiBC-betslip-outcome__outcome-label"
+SEL_BETSLIP_MERCADO = ".mod-KambiBC-betslip-outcome__criteria"
+SEL_BETSLIP_CUOTA = ".mod-KambiBC-betslip-outcome__odds"
+SEL_MONTO_APUESTA = "input.mod-KambiBC-js-stake-input"
+
+# Para apostar el BONO se buscan cuotas medias-altas (3.0 a 6.0): el rollover del
+# bono rinde mejor. Para el saldo real (rango None) se toma la primera disponible.
 RANGO_CUOTA_BONO = (3.0, 6.0)
 # Cuantas cuotas candidatas inspeccionamos como maximo al buscar el rango.
 MAX_CUOTAS_INSPECCIONAR = 60
+
+# Ventana temporal de la apuesta: solo partidos de HOY/MAÑANA en la tarde-noche
+# (~8 p. m.). Ajusta el rango de horas a gusto (formato 24h).
+APUESTA_SOLO_HOY_MANANA = True
+APUESTA_HORA_MIN = 18   # desde las 6:00 p. m.
+APUESTA_HORA_MAX = 23   # hasta las 11:00 p. m. (incluye ~8 p. m.)
+# Fecha/hora del evento: spans con clase 'EventDate__TimeWrapper' (día y hora van
+# en spans SEPARADOS: "Hoy"/"Mañana" + "06:00 p. m."). Se leen todos y se unen.
+# Vacío = no se filtra por hora.
+SEL_EVENTO_HORA = '[class*="EventDate__TimeWrapper"]'
 
 
 # ==================== COMPORTAMIENTO HUMANO ====================
@@ -187,10 +216,213 @@ INDICADORES_REGISTRO_OK = (
     "/cuenta", "dashboard", "mi cuenta",
 )
 INDICADORES_REGISTRO_ERROR = (
-    "ya registrado", "correo existe", "correo ya", "cedula ya", "cédula ya",
-    "ya existe", "invalido", "inválido", "no se pudo completar", "intentalo mas tarde",
-    "inténtalo más tarde",
+    "ya registrado", "correo existe", "correo ya", "se encuentra en uso",
+    "cedula ya", "cédula ya", "ya existe", "invalido", "inválido",
+    "no se pudo completar", "intentalo mas tarde", "inténtalo más tarde",
 )
+
+# Mapa etiqueta -> value del <select formcontrolname="documentType"> de Betplay.
+# El value es el ID de backend (estable); la etiqueta visible puede variar.
+DOC_TIPO_VALORES = {
+    "cedula de ciudadania": "3",
+    "cedula de extranjeria": "4",
+    "permiso de proteccion temporal": "544",
+    "ppt": "544",
+}
+DOC_TIPO_POR_DEFECTO = "3"  # Cédula de ciudadanía
+
+
+def _sin_tildes(texto: Any) -> str:
+    """minúsculas sin tildes ni espacios extremos (para comparar etiquetas)."""
+    import unicodedata
+
+    normal = unicodedata.normalize("NFKD", str(texto))
+    return "".join(c for c in normal if not unicodedata.combining(c)).strip().lower()
+
+
+def _valor_tipo_doc(datos: Dict[str, Any]) -> str:
+    """
+    value del tipo de documento. Acepta el texto ('Cédula de ciudadanía'), el
+    value directo ('3'/'4'/'544') o vacío (usa el valor por defecto).
+    """
+    bruto = str(datos.get("TipoDocumento", "") or "").strip()
+    if not bruto:
+        return DOC_TIPO_POR_DEFECTO
+    if bruto in ("3", "4", "544"):
+        return bruto
+    return DOC_TIPO_VALORES.get(_sin_tildes(bruto), DOC_TIPO_POR_DEFECTO)
+
+
+# <select formcontrolname="gender">: 1=Masculino, 2=Femenino.
+GENERO_VALORES = {
+    "masculino": "1", "m": "1", "hombre": "1",
+    "femenino": "2", "f": "2", "mujer": "2",
+}
+
+# <select formcontrolname="addressType">: value (sigla) por tipo de vía.
+TIPO_VIA_VALORES = {
+    "avenida calle": "AC", "avenida carrera": "AK", "autopista": "AUT",
+    "avenida": "AV", "calle": "CL", "circunvalar": "CRV", "diagonal": "DG",
+    "transversal": "TV", "kilometro": "KM", "carrera": "CR", "circular": "CIR",
+}
+TIPO_VIA_SIGLAS = {"AC", "AK", "AUT", "AV", "CL", "CRV", "DG", "TV", "KM", "CR", "CIR"}
+
+
+def _valor_genero(datos: Dict[str, Any]) -> str:
+    """value del género. Acepta texto ('Masculino'/'F'), el value ('1'/'2') o vacío."""
+    bruto = str(datos.get("Genero", "") or "").strip()
+    if bruto in ("1", "2"):
+        return bruto
+    return GENERO_VALORES.get(_sin_tildes(bruto), "1")  # por defecto Masculino
+
+
+def _valor_tipo_via(datos: Dict[str, Any]) -> str:
+    """value del tipo de vía. Acepta texto ('Calle'), la sigla ('CL') o vacío."""
+    bruto = str(datos.get("TipoVia", "") or "").strip()
+    if bruto.upper() in TIPO_VIA_SIGLAS:
+        return bruto.upper()
+    return TIPO_VIA_VALORES.get(_sin_tildes(bruto), "CL")  # por defecto Calle
+
+
+def _norm_dia(valor: Any, defecto: str = "") -> str:
+    """Día SIN cero a la izquierda: los <option> de expeditionDay usan '1'..'31'."""
+    try:
+        return str(int(float(str(valor).strip())))
+    except (ValueError, TypeError):
+        return defecto
+
+
+def _norm_mes(valor: Any, defecto: str = "") -> str:
+    """Mes con DOS dígitos: los <option> de expeditionMonth usan '01'..'12'."""
+    try:
+        return f"{int(float(str(valor).strip())):02d}"
+    except (ValueError, TypeError):
+        return defecto
+
+
+def _norm_anio(valor: Any, defecto: str = "") -> str:
+    """Año de 4 dígitos: los <option> de expeditionYear usan '1995', etc."""
+    try:
+        return str(int(float(str(valor).strip())))
+    except (ValueError, TypeError):
+        return defecto
+
+
+async def _seleccionar_opcion(page, selector: str, valor: str, etiqueta: str = "") -> bool:
+    """
+    Selecciona una <option> por value en un <select> Angular (dispara el evento
+    change que Angular necesita). Devuelve True si pudo, False si no.
+    """
+    if not valor:
+        return False
+    try:
+        await page.locator(selector).first.wait_for(state="visible", timeout=8000)
+        await page.select_option(selector, value=valor)
+        await human_delay(0.4, 1.0)
+        return True
+    except ERRORES_PW:
+        logger.warning(f"[{etiqueta}] No se pudo seleccionar value='{valor}' en {selector}")
+        return False
+
+
+async def _verificar_celular(
+    page,
+    code_provider: Optional[Callable[[], Awaitable[Optional[str]]]] = None,
+    timeout_campo_ms: int = 15000,
+) -> bool:
+    """
+    Maneja la verificación de celular post-registro de Betplay: detecta el campo
+    input[formcontrolname="verificationCode"], obtiene el código vía code_provider
+    (lector de correo) y lo escribe, luego intenta enviarlo.
+
+    El código llega por SMS y también por correo ("El código para poder
+    registrarte es: 771160"); code_provider lo saca del correo con el patrón de
+    6 dígitos ya existente. Devuelve True si escribió un código, False si no.
+    """
+    # Rechazo temprano: "El correo ya se encuentra en uso." (solo botón Aceptar).
+    # Si aparece, no habrá paso de código; salimos ya sin esperar el timeout largo.
+    try:
+        await page.get_by_text(
+            re.compile(r"se encuentra en uso", re.IGNORECASE)
+        ).first.wait_for(state="visible", timeout=3000)
+        logger.warning("Registro rechazado: el correo ya se encuentra en uso.")
+        return False
+    except ERRORES_PW:
+        pass
+
+    try:
+        campo = page.locator('input[formcontrolname="verificationCode"]').first
+        await campo.wait_for(state="visible", timeout=timeout_campo_ms)
+    except ERRORES_PW:
+        logger.info("Sin paso de verificación de celular (el campo no apareció).")
+        return False
+
+    logger.info("Verificación de celular detectada; solicitando código por correo...")
+    if code_provider is None:
+        logger.warning(
+            "No hay proveedor de código (¿ClaveCorreo vacía?); "
+            "escribe el código MANUALMENTE en el navegador."
+        )
+        return False
+
+    codigo = None
+    try:
+        codigo = await code_provider()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"El proveedor de código de registro falló: {e}")
+
+    if not codigo:
+        logger.warning("No se pudo obtener el código de verificación de registro.")
+        return False
+
+    await human_type(page, 'input[formcontrolname="verificationCode"]', codigo)
+    await human_delay(1, 2)
+
+    # Enviar el código: botón real de Betplay (input[type=submit] value="Validar").
+    # Si no está, probamos por rol/texto y, en último caso, Enter.
+    try:
+        await page.locator('input[type="submit"][value="Validar"]').first.click(timeout=6000)
+    except ERRORES_PW:
+        try:
+            await page.get_by_role(
+                "button",
+                name=re.compile(r"Validar|Verificar|Confirmar|Continuar|Completar", re.IGNORECASE),
+            ).first.click(timeout=6000)
+        except ERRORES_PW:
+            try:
+                await page.keyboard.press("Enter")
+            except ERRORES_PW:
+                pass
+    await human_delay(4, 7)
+    logger.info(f"Código de verificación enviado: {codigo}")
+    return True
+
+
+# Patrón de contraseña que EXIGE Betplay (mayúscula + dígito + un signo .;, y solo
+# esos caracteres). Igual al ng-pattern del campo 'password' del registro.
+PATRON_PASSWORD_BETPLAY = re.compile(r"^(?=.*[A-Z])(?=.*\d)(?=.*[.;,])[A-Za-z\d.;,]+$")
+
+
+def _validar_datos_registro(datos: Dict[str, Any]) -> tuple:
+    """
+    Verifica los datos MÍNIMOS de un registro ANTES de tocar el formulario, para no
+    gastar un intento (captcha + verificación por SMS/correo) en una fila incompleta
+    o con una contraseña que Betplay va a rechazar. Devuelve (ok: bool, mensaje).
+    """
+    obligatorios = ("Cedula", "PrimerNombre", "PrimerApellido", "Correo", "Password")
+    faltantes = [c for c in obligatorios if not str(datos.get(c, "") or "").strip()]
+    if faltantes:
+        return False, f"Faltan datos obligatorios: {', '.join(faltantes)}"
+    correo = str(datos.get("Correo", ""))
+    if "@" not in correo or "." not in correo:
+        return False, f"Correo con formato inválido: {correo!r}"
+    pwd = str(datos.get("Password", ""))
+    if not PATRON_PASSWORD_BETPLAY.match(pwd):
+        return False, (
+            "La contraseña no cumple el patrón de Betplay (mayúscula + dígito + un "
+            "signo . ; , y solo esos caracteres, sin espacios). Ej válido: 'Betplay2026.'"
+        )
+    return True, "ok"
 
 
 async def registrar_cuenta(
@@ -198,12 +430,16 @@ async def registrar_cuenta(
     datos: Dict[str, Any],
     base_url: str = BASE_URL_POR_DEFECTO,
     captcha_waiter: Optional[Callable[[], Awaitable[None]]] = None,
+    code_provider: Optional[Callable[[], Awaitable[Optional[str]]]] = None,
 ) -> Dict[str, Any]:
     """
     Registro completo con los selectores reales de Betplay.
 
-    `datos` admite las claves: Cedula, ExpedicionDD/MM/YYYY, LugarExpedicion,
-    NacimientoDD/MM/YYYY, PrimerNombre, PrimerApellido, Telefono, Correo, Password.
+    `datos` admite las claves: TipoDocumento, Cedula, ExpedicionDD/MM/YYYY,
+    LugarExpedicion, NacimientoDD/MM/YYYY, PrimerNombre, SegundoNombre,
+    PrimerApellido, SegundoApellido, Genero, Telefono, Correo, TipoVia,
+    Direccion1/2/3, Ciudad, Password. Las opcionales (segundo nombre/apellido) se
+    omiten si vienen vacías; el resto usa un valor por defecto sensato.
 
     Antes del envío hace una PAUSA MANUAL para que resuelvas el reCAPTCHA a mano
     en el navegador (ver ESPERA_CAPTCHA_SEG). Tras enviar el formulario hace una
@@ -214,6 +450,15 @@ async def registrar_cuenta(
     """
     try:
         logger.info("Iniciando registro completo...")
+        etq = str(datos.get("Correo", "") or datos.get("PrimerNombre", "") or "registro")
+
+        # Validación previa: si faltan datos o la contraseña no cumple, NO tocamos el
+        # formulario (evita gastar el intento y la verificación por SMS/correo).
+        ok_datos, msg_datos = _validar_datos_registro(datos)
+        if not ok_datos:
+            logger.error(f"[{etq}] Registro OMITIDO por datos inválidos: {msg_datos}")
+            return {"ok": False, "estado": "error_registro", "mensaje": msg_datos}
+
         await page.goto(base_url, wait_until="domcontentloaded", timeout=45000)
         await human_delay(3, 6)
 
@@ -223,54 +468,80 @@ async def registrar_cuenta(
         ).first.click(timeout=12000)
         await human_delay(3, 5)
 
-        # Tipo de documento (se selecciona por etiqueta visible, no por value).
-        await page.select_option(
-            'select[name*="tipoDocumento"], select#tipoDocumento',
-            label="Cédula de ciudadanía",
+        # Tipo de documento: <select formcontrolname="documentType"> (por value:
+        # 3=C.C., 4=C.E., 544=PPT). Por defecto Cédula de ciudadanía.
+        await _seleccionar_opcion(
+            page, 'select[formcontrolname="documentType"]', _valor_tipo_doc(datos), etq
         )
         await human_delay(1, 2)
 
-        # Número de identificación (cédula).
-        await human_type(
-            page,
-            'input[name*="numeroIdentificacion"], input#numeroIdentificacion',
-            datos.get("Cedula", ""),
-        )
+        # Número de identificación (cédula) -> es el usuario de la cuenta Betplay.
+        await human_type(page, 'input[formcontrolname="documentNumber"]', datos.get("Cedula", ""))
 
-        # Fecha de expedición (con valores por defecto si no vienen en datos).
-        await human_type(page, 'input[placeholder*="DD"][name*="expedicion"], input[name*="fechaExpedicionDD"]', datos.get("ExpedicionDD", "15"))
-        await human_type(page, 'input[placeholder*="MM"][name*="expedicion"], input[name*="fechaExpedicionMM"]', datos.get("ExpedicionMM", "06"))
-        await human_type(page, 'input[placeholder*="YYYY"][name*="expedicion"], input[name*="fechaExpedicionYYYY"]', datos.get("ExpedicionYYYY", "1995"))
+        # Fecha de expedición: tres <select> (día '1'..'31' SIN cero, mes '01'..'12'
+        # con cero, año '1995'..). Normalizamos lo que venga del Excel a esos values.
+        await _seleccionar_opcion(page, 'select[formcontrolname="expeditionDay"]', _norm_dia(datos.get("ExpedicionDD"), "15"), etq)
+        await _seleccionar_opcion(page, 'select[formcontrolname="expeditionMonth"]', _norm_mes(datos.get("ExpedicionMM"), "06"), etq)
+        await _seleccionar_opcion(page, 'select[formcontrolname="expeditionYear"]', _norm_anio(datos.get("ExpedicionYYYY"), "1995"), etq)
 
-        await human_type(page, 'input[name*="lugarExpedicion"], input#lugarExpedicion', datos.get("LugarExpedicion", "BOGOTA"))
+        # Lugar de expedición: input[formcontrolname="expeditionPlace"].
+        await human_type(page, 'input[formcontrolname="expeditionPlace"]', datos.get("LugarExpedicion", "BOGOTA"))
 
-        # Fecha de nacimiento.
-        await human_type(page, 'input[placeholder*="DD"][name*="nacimiento"], input[name*="fechaNacimientoDD"]', datos.get("NacimientoDD", "10"))
-        await human_type(page, 'input[placeholder*="MM"][name*="nacimiento"], input[name*="fechaNacimientoMM"]', datos.get("NacimientoMM", "03"))
-        await human_type(page, 'input[placeholder*="YYYY"][name*="nacimiento"], input[name*="fechaNacimientoYYYY"]', datos.get("NacimientoYYYY", "1995"))
+        # Fecha de nacimiento: tres <select> (mismo formato que expedición:
+        # día '1'..'31', mes '01'..'12', año '1908'..'2008').
+        await _seleccionar_opcion(page, 'select[formcontrolname="bornDay"]', _norm_dia(datos.get("NacimientoDD"), "10"), etq)
+        await _seleccionar_opcion(page, 'select[formcontrolname="bornMonth"]', _norm_mes(datos.get("NacimientoMM"), "03"), etq)
+        await _seleccionar_opcion(page, 'select[formcontrolname="bornYear"]', _norm_anio(datos.get("NacimientoYYYY"), "1995"), etq)
 
-        await human_type(page, 'input[name*="primerNombre"], input#primerNombre', datos.get("PrimerNombre", ""))
-        await human_type(page, 'input[name*="primerApellido"], input#primerApellido', datos.get("PrimerApellido", ""))
+        # Nombres: primer nombre (firstName) + segundo nombre opcional (firstName2).
+        await human_type(page, 'input[formcontrolname="firstName"]', datos.get("PrimerNombre", ""))
+        segundo_nombre = datos.get("SegundoNombre", "")
+        if str(segundo_nombre).strip():
+            await human_type(page, 'input[formcontrolname="firstName2"]', segundo_nombre)
 
-        # Contacto.
-        await human_type(page, 'input[name*="telefono"], input#telefonoMovil', datos.get("Telefono", ""))
-        await human_type(page, 'input[name*="email"], input#correoElectronico, input[placeholder*="orreo"]', datos.get("Correo", ""))
+        # Apellidos: primer apellido (lastName) + segundo apellido opcional (lastName2).
+        await human_type(page, 'input[formcontrolname="lastName"]', datos.get("PrimerApellido", ""))
+        segundo_apellido = datos.get("SegundoApellido", "")
+        if str(segundo_apellido).strip():
+            await human_type(page, 'input[formcontrolname="lastName2"]', segundo_apellido)
 
-        # Contraseña + confirmación.
+        # Género: <select formcontrolname="gender"> (1=Masculino, 2=Femenino).
+        await _seleccionar_opcion(page, 'select[formcontrolname="gender"]', _valor_genero(datos), etq)
+
+        # Contacto: teléfono (mobilePhoneNumber, 10 díg.) + correo (email).
+        await human_type(page, 'input[formcontrolname="mobilePhoneNumber"]', datos.get("Telefono", ""))
+        await human_type(page, 'input[formcontrolname="email"]', datos.get("Correo", ""))
+
+        # Dirección: tipo de vía (<select addressType>) + tres campos + ciudad.
+        await _seleccionar_opcion(page, 'select[formcontrolname="addressType"]', _valor_tipo_via(datos), etq)
+        await human_type(page, 'input[formcontrolname="address1"]', datos.get("Direccion1", "26D"))
+        await human_type(page, 'input[formcontrolname="address2"]', datos.get("Direccion2", "57D"))
+        await human_type(page, 'input[formcontrolname="address3"]', datos.get("Direccion3", "87"))
+        await human_type(page, 'input[formcontrolname="cityAddress"]', datos.get("Ciudad", "BOGOTA"))
+
+        # Contraseña + confirmación. OJO: Betplay exige mayúscula, dígito y un signo
+        # de [.;,] (ej. "Betplay2026."); si la clave no cumple, el form no valida.
         pwd = datos.get("Password", "")
-        await human_type(page, 'input[name*="password"], input#contrasena', pwd)
-        await human_type(page, 'input[name*="confirmPassword"], input#confirmarContrasena', pwd)
+        await human_type(page, 'input[formcontrolname="password"]', pwd)
+        await human_type(page, 'input[formcontrolname="cnfPassword"]', pwd)
 
-        # PEP (Persona Expuesta Políticamente).
-        await page.select_option('select[name*="pep"], select#pep', label="No")
+        # Ludopatía y PEP: ambos <select> a "No" (value 2) por defecto.
+        await _seleccionar_opcion(page, 'select[formcontrolname="ludopath"]', "2", etq)
+        await _seleccionar_opcion(page, 'select[formcontrolname="pep"]', "2", etq)
 
-        # Aceptar todos los checkboxes (términos, mayoría de edad, etc.).
+        # Checkboxes (tratamiento de datos, promociones, términos, origen de fondos).
+        # Son checkboxes Angular con estilo propio: si el click normal falla por
+        # actionability, reintentamos con force.
         for checkbox in await page.locator('input[type="checkbox"]').all():
             try:
-                await checkbox.check()
-                await human_delay(0.4, 0.8)
+                if not await checkbox.is_checked():
+                    await checkbox.check(timeout=4000)
             except ERRORES_PW:
-                pass
+                try:
+                    await checkbox.check(force=True, timeout=4000)
+                except ERRORES_PW:
+                    pass
+            await human_delay(0.3, 0.7)
 
         # ---------- CAPTCHA MANUAL ----------
         # Betplay usa reCAPTCHA; no lo resolvemos automaticamente. Si el dashboard
@@ -285,10 +556,21 @@ async def registrar_cuenta(
             )
             await human_delay(*ESPERA_CAPTCHA_SEG)
 
-        # Botón final.
-        await page.click('button:has-text("Completar Registro"), button[type="submit"]', timeout=15000)
+        # Botón final: button.betplaycaptcha "Completar Registro" (se habilita tras
+        # resolver el reCAPTCHA manualmente).
+        await page.click(
+            'button.betplaycaptcha:has-text("Completar Registro"), '
+            'button:has-text("Completar Registro"), button[type="submit"]',
+            timeout=15000,
+        )
         await human_delay(6, 10)
         logger.info("Formulario de registro enviado")
+
+        # ---------- VERIFICACION DE CELULAR (codigo por SMS/correo) ----------
+        # Tras enviar, Betplay pide un codigo (llega por SMS y tambien por correo)
+        # en input[formcontrolname="verificationCode"]. Si el campo aparece y hay
+        # un proveedor de codigo (lector de correo), lo obtenemos y lo escribimos.
+        codigo_enviado = await _verificar_celular(page, code_provider)
 
         # ---------- VALIDACION POST-REGISTRO (heuristica) ----------
         # Leemos texto del body + URL para decidir si el registro fue OK, fue
@@ -304,6 +586,12 @@ async def registrar_cuenta(
             logger.warning("Registro RECHAZADO: indicador de error detectado en la pagina.")
             return {"ok": False, "estado": "registro_rechazado",
                     "mensaje": "Error detectado en la pagina tras enviar el registro"}
+        # Llegar al paso del codigo y validarlo es senal fuerte de exito: el correo
+        # no estaba en uso y Betplay dejo continuar la creacion.
+        if codigo_enviado:
+            logger.info("Registro OK: código de verificación de celular validado.")
+            return {"ok": True, "estado": "registro_ok",
+                    "mensaje": "Registro completado (código de celular validado)"}
         if any(ind in texto for ind in INDICADORES_REGISTRO_OK):
             logger.info("Registro detectado como EXITOSO.")
             return {"ok": True, "estado": "registro_ok", "mensaje": "Registro completado"}
@@ -396,7 +684,7 @@ async def process_user(
 
             # ---------- Registro (opcional) ----------
             if modo == "registro":
-                reg = await registrar_cuenta(page, datos or {}, base_url, confirmar_waiter)
+                reg = await registrar_cuenta(page, datos or {}, base_url, confirmar_waiter, code_provider)
                 registro_estado = reg.get("estado", "error_registro")
                 logger.info(
                     f"[{etiqueta}] Registro -> estado={registro_estado} "
@@ -456,10 +744,12 @@ async def process_user(
             # ya envió el correo con el código, así que es el momento correcto
             # para pedirlo (vía code_provider) en lugar de pre-buscarlo.
             hay_2fa = False
+            sel_codigo = (
+                'input[formcontrolname="verificationCode"], '
+                'input[placeholder*="código" i], #verification-code, #code, input[name*="code" i]'
+            )
             try:
-                await page.locator(
-                    'input[placeholder*="código" i], #verification-code, #code, input[name*="code" i]'
-                ).first.wait_for(state="visible", timeout=8000)
+                await page.locator(sel_codigo).first.wait_for(state="visible", timeout=8000)
                 hay_2fa = True
             except ERRORES_PW:
                 pass  # esta cuenta no pidió 2FA
@@ -469,12 +759,12 @@ async def process_user(
                 await human_delay(2, 4)
                 codigo = await _obtener_codigo_2fa(verification_code, code_provider, etiqueta)
                 if codigo:
-                    await human_type(
-                        page,
-                        'input[placeholder*="código" i], #verification-code, #code',
-                        codigo,
-                    )
-                    await page.keyboard.press("Enter")
+                    await human_type(page, sel_codigo, codigo)
+                    # Enviar: botón "Validar" real de Betplay o Enter como respaldo.
+                    try:
+                        await page.locator('input[type="submit"][value="Validar"]').first.click(timeout=5000)
+                    except ERRORES_PW:
+                        await page.keyboard.press("Enter")
                     await human_delay(4, 7)
                 else:
                     logger.warning(f"[{etiqueta}] 2FA presente pero sin código disponible")
@@ -508,10 +798,19 @@ async def process_user(
             apuesta_bono = "n/a"
             apuesta_saldo = "n/a"
 
+            limite_revisado = False
             if "apuesta_maxima" in seleccion:
                 limitada = await probar_limite(page, base_url, etiqueta)
+                limite_revisado = True
             if "bonos" in seleccion:
                 bono = await verificar_bonos(page, base_url, etiqueta)
+
+            # Verificación derivada del límite: si la cuenta NO está limitada, se
+            # considera verificada. Si no revisamos el límite, usamos la insignia.
+            if limite_revisado:
+                verificada = "no" if limitada else "si"
+            else:
+                verificada = info["verificada"]
             if "apostar_bono" in seleccion:
                 # Apostamos el bono SOLO en cuentas que efectivamente tienen bono.
                 # Si la tarea 'bonos' no corrio antes, lo verificamos aqui mismo.
@@ -529,7 +828,8 @@ async def process_user(
 
             return {
                 "saldo": info["saldo"],
-                "verificada": info["verificada"],
+                "saldo_retirable": info.get("saldo_retirable", 0.0),
+                "verificada": verificada,
                 "limitada": limitada,
                 "bono": bono,
                 "apuesta_bono": apuesta_bono,
@@ -586,19 +886,33 @@ async def _obtener_codigo_2fa(
 
 async def extraer_info_cuenta(page, etiqueta: str = "") -> Dict[str, Any]:
     """
-    Punto 6: extrae el saldo (parser es-CO) y el estado de verificación, usando
-    listas amplias de selectores combinadas con get_by_text vía .or_().
+    Extrae el saldo TOTAL (td.balance-td), el saldo RETIRABLE (el <td> hermano
+    inmediato) y el estado de verificación.
 
-    Devuelve {"saldo": float, "verificada": "si"|"no"}.
+    En la tabla de saldo de Betplay las celdas van: total (td.balance-td),
+    retirable, bono activo, bono pendiente. El retirable es "plata real".
+
+    Devuelve {"saldo": float, "saldo_retirable": float, "verificada": "si"|"no"}.
     """
     saldo = 0.0
+    saldo_retirable = 0.0
     try:
         saldo_locator = page.locator(SELECTORES_SALDO).or_(
             page.get_by_text(re.compile(r"\$\s*[\d.,]+"))
         ).first
         await saldo_locator.wait_for(state="visible", timeout=8000)
         saldo = extraer_saldo(await saldo_locator.inner_text(timeout=5000))
-        logger.info(f"[{etiqueta}] Saldo extraído: ${saldo:,.2f}")
+        logger.info(f"[{etiqueta}] Saldo total extraído: ${saldo:,.2f}")
+
+        # Saldo retirable: el <td> hermano inmediato a td.balance-td.
+        try:
+            retirable_loc = page.locator("td.balance-td").locator(
+                "xpath=following-sibling::td[1]"
+            ).first
+            saldo_retirable = extraer_saldo(await retirable_loc.inner_text(timeout=4000))
+            logger.info(f"[{etiqueta}] Saldo retirable extraído: ${saldo_retirable:,.2f}")
+        except ERRORES_PW:
+            logger.debug(f"[{etiqueta}] No se pudo leer el saldo retirable")
     except ERRORES_PW:
         logger.warning(f"[{etiqueta}] No se pudo extraer el saldo")
 
@@ -618,30 +932,68 @@ async def extraer_info_cuenta(page, etiqueta: str = "") -> Dict[str, Any]:
     except ERRORES_PW:
         logger.info(f"[{etiqueta}] Sin insignia de verificación visible (no)")
 
-    return {"saldo": saldo, "verificada": verificada}
+    return {"saldo": saldo, "saldo_retirable": saldo_retirable, "verificada": verificada}
+
+
+async def _navegar_seccion_cuenta(
+    page, base_url: str, opcion_regex: str, ruta_fallback: str, etiqueta: str = ""
+) -> None:
+    """
+    Navega a una sección de la cuenta por CLICS (más robusto que URLs directas):
+    abre el menú "Mi cuenta" y hace clic en la opción; si no aparece, intenta el
+    clic directo; y como último respaldo va por la URL directa.
+    """
+    opcion = re.compile(opcion_regex, re.IGNORECASE)
+    try:
+        await page.get_by_text(
+            re.compile(r"^\s*Mi cuenta\s*$", re.IGNORECASE)
+        ).first.click(timeout=6000)
+        await human_delay(1, 2)
+    except ERRORES_PW:
+        pass
+    try:
+        await page.get_by_text(opcion).first.click(timeout=6000)
+        await human_delay(2, 4)
+        return
+    except ERRORES_PW:
+        logger.debug(f"[{etiqueta}] Navegación por clic falló; uso URL {ruta_fallback}")
+    await page.goto(f"{base_url}{ruta_fallback}", wait_until="networkidle", timeout=20000)
+    await human_delay(2, 4)
 
 
 async def probar_limite(page, base_url: str, etiqueta: str) -> bool:
     """
-    Punto 9: revisa la página OFICIAL de límites del usuario y detecta si la
-    cuenta está limitada (texto de límite, vía contiene_restriccion, o un tope
-    diario bajo según MARCADORES_LIMITE). Más fiable que simular una apuesta.
+    Lee la página oficial de Límites de Usuario y determina si la cuenta está
+    limitada comparando el "Límite Diario" real contra el normal ($10.000.000):
+    un tope MENOR al normal = cuenta limitada. Devuelve True si está limitada.
     """
     try:
-        logger.info(f"[{etiqueta}] Revisando límites oficiales del usuario...")
-        await page.goto(f"{base_url}{RUTA_LIMITES}", wait_until="networkidle", timeout=20000)
-        await human_delay(3, 6)
+        logger.info(f"[{etiqueta}] Revisando límite diario del usuario...")
+        await _navegar_seccion_cuenta(
+            page, base_url, r"Límites de Usuario", RUTA_LIMITES, etiqueta
+        )
+        await human_delay(2, 4)
 
-        texto = await page.locator("body").inner_text(timeout=10000)
-
-        if contiene_restriccion(texto, PALABRAS_LIMITE_BETPLAY) or any(
-            marcador in texto for marcador in MARCADORES_LIMITE
-        ):
-            logger.info(f"[{etiqueta}] Cuenta LIMITADA detectada (límite diario bajo)")
-            return True
-
-        logger.info(f"[{etiqueta}] Sin límites restrictivos aparentes")
-        return False
+        # Valor real del "Límite Diario" (p. ej. "$10.000.000").
+        try:
+            valor_txt = await page.locator(SEL_LIMITE_DIARIO).first.inner_text(timeout=8000)
+            limite = extraer_saldo(valor_txt)
+            logger.info(f"[{etiqueta}] Límite diario leído: ${limite:,.0f}")
+            if 0 < limite < LIMITE_DIARIO_NORMAL:
+                logger.info(
+                    f"[{etiqueta}] Cuenta LIMITADA (tope ${limite:,.0f} < "
+                    f"normal ${LIMITE_DIARIO_NORMAL:,.0f})"
+                )
+                return True
+            return False
+        except ERRORES_PW:
+            # Respaldo: si no se pudo leer el valor, usamos el texto de la página.
+            texto = await page.locator("body").inner_text(timeout=8000)
+            if contiene_restriccion(texto, PALABRAS_LIMITE_BETPLAY):
+                logger.info(f"[{etiqueta}] Cuenta LIMITADA (texto de restricción)")
+                return True
+            logger.info(f"[{etiqueta}] Sin límite bajo aparente")
+            return False
     except ERRORES_PW as e:
         logger.debug(f"[{etiqueta}] Prueba de límite no concluyente: {e}")
         return False
@@ -654,12 +1006,19 @@ async def verificar_bonos(page, base_url: str, etiqueta: str) -> str:
     """
     try:
         logger.info(f"[{etiqueta}] Revisando bonos del usuario...")
-        await page.goto(f"{base_url}{RUTA_BONOS}", wait_until="networkidle", timeout=20000)
-        await human_delay(3, 5)
-        texto = await page.locator("body").inner_text(timeout=10000)
-        if "Bono Activo" in texto or "Bono Pendiente" in texto:
+        await _navegar_seccion_cuenta(
+            page, base_url, r"Redimir Promoción|Redimir Promocion|Bonos|Promociones",
+            RUTA_BONOS, etiqueta,
+        )
+        await human_delay(2, 4)
+        cuerpo = (await page.locator("body").inner_text(timeout=10000)).lower()
+        if MARCADOR_SIN_BONOS in cuerpo:
+            logger.info(f"[{etiqueta}] Sin bonos ('No tienes bonos actualmente')")
+            return "Sin bonos"
+        if "bono activo" in cuerpo or "bono pendiente" in cuerpo:
             logger.info(f"[{etiqueta}] Bono detectado")
             return "Tiene Bono"
+        logger.info(f"[{etiqueta}] Sin señal clara de bono; se asume Sin bonos")
         return "Sin bonos"
     except ERRORES_PW as e:
         logger.debug(f"[{etiqueta}] No se pudo verificar bonos: {e}")
@@ -713,24 +1072,151 @@ def _calcular_monto(apuesta_cfg: Optional[Dict[str, Any]], saldo: float) -> floa
     return valor
 
 
+def _evento_en_ventana(
+    texto: str,
+    ahora: Optional[datetime] = None,
+    hora_min: int = APUESTA_HORA_MIN,
+    hora_max: int = APUESTA_HORA_MAX,
+    solo_hoy_manana: bool = APUESTA_SOLO_HOY_MANANA,
+) -> bool:
+    """
+    Decide si el texto de fecha/hora de un evento cae en la ventana deseada: hoy o
+    mañana (si solo_hoy_manana) y con hora de inicio en [hora_min, hora_max] (24h).
+
+    Tolera formatos como 'Hoy 20:00', 'Mañana 8:00 PM', '05/07 20:30',
+    '05.07. 20:00'. Si no logra extraer una hora, devuelve False (no arriesga).
+    """
+    if not texto:
+        return False
+    t = texto.strip().lower()
+    ahora = ahora or datetime.now()
+
+    # --- Hora (12h con am/pm o 24h) ---
+    hh = None
+    mm = 0
+    m12 = re.search(r"(\d{1,2}):(\d{2})\s*(a\.?\s*m\.?|p\.?\s*m\.?)", t)
+    if m12:
+        hh, mm = int(m12.group(1)), int(m12.group(2))
+        marca = m12.group(3).replace(" ", "")
+        if marca.startswith("p") and hh < 12:
+            hh += 12
+        if marca.startswith("a") and hh == 12:
+            hh = 0
+    else:
+        m24 = re.search(r"(\d{1,2}):(\d{2})", t)
+        if m24:
+            hh, mm = int(m24.group(1)), int(m24.group(2))
+    if hh is None:
+        return False
+
+    # --- Día (hoy/mañana o fecha DD/MM) ---
+    dia_ok = True
+    if solo_hoy_manana:
+        hoy = ahora.date()
+        manana = (ahora + timedelta(days=1)).date()
+        if any(k in t for k in ("hoy", "today")):
+            dia_ok = True
+        elif any(k in t for k in ("mañana", "manana", "tomorrow")):
+            dia_ok = True
+        else:
+            mfecha = re.search(r"(\d{1,2})[/.](\d{1,2})", t)
+            if mfecha:
+                d, mth = int(mfecha.group(1)), int(mfecha.group(2))
+                dia_ok = (d, mth) in {(hoy.day, hoy.month), (manana.day, manana.month)}
+            # Sin marca de día explícita: asumimos próximo (hoy/mañana) -> dia_ok True.
+
+    return dia_ok and (hora_min <= hh <= hora_max)
+
+
+async def _frame_con(page, selector: str, timeout: int = 8000):
+    """
+    Devuelve el frame (la propia página o un iframe hijo) donde el selector es
+    visible. Kambi suele estar en un iframe, así que buscamos en todos. None si
+    no aparece en ninguno.
+    """
+    try:
+        await page.locator(selector).first.wait_for(state="visible", timeout=timeout)
+        return page
+    except ERRORES_PW:
+        pass
+    for fr in page.frames:
+        try:
+            await fr.locator(selector).first.wait_for(state="visible", timeout=1500)
+            return fr
+        except ERRORES_PW:
+            continue
+    return None
+
+
+async def _ir_a_deportes(page, base_url: str, etiqueta: str = "") -> None:
+    """Navega al home y entra a la sección Deportes (clic directo o vía menú)."""
+    await page.goto(base_url, wait_until="domcontentloaded", timeout=45000)
+    await human_delay(2, 4)
+    try:
+        await page.locator(SEL_DEPORTES).filter(
+            has_text=re.compile("Deportes", re.IGNORECASE)
+        ).first.click(timeout=6000)
+        return
+    except ERRORES_PW:
+        pass
+    # Respaldo: abrir el menú hamburguesa y luego "Deportes".
+    try:
+        await page.locator(SEL_MENU_HAMBURGUESA).first.click(timeout=4000)
+        await human_delay(1, 2)
+        await page.get_by_text(re.compile(r"^\s*Deportes\s*$", re.IGNORECASE)).first.click(timeout=6000)
+    except ERRORES_PW:
+        logger.warning(f"[{etiqueta}] No se pudo navegar a Deportes por clic.")
+
+
+async def _cuota_en_horario(boton, etiqueta: str = "") -> bool:
+    """
+    True si el evento del botón de cuota cae en la ventana horaria deseada. Sube a
+    la tarjeta del evento (EventListItem) y une TODOS los spans de fecha/hora
+    (día y hora vienen separados: "Hoy" + "06:00 p. m."). Si no se puede leer la
+    hora, devuelve False (no arriesga apostar fuera de rango).
+    """
+    try:
+        tarjeta = boton.locator("xpath=ancestor::*[contains(@class,'EventListItem')][1]")
+        spans = tarjeta.locator(SEL_EVENTO_HORA)
+        n = await spans.count()
+        partes = []
+        for i in range(min(n, 4)):
+            try:
+                partes.append((await spans.nth(i).inner_text(timeout=1500)).strip())
+            except ERRORES_PW:
+                continue
+        hora_txt = " ".join(p for p in partes if p)
+    except ERRORES_PW:
+        return False
+    if not hora_txt:
+        return False
+    ok = _evento_en_ventana(hora_txt)
+    if not ok:
+        logger.debug(f"[{etiqueta}] Evento fuera de la ventana horaria: {hora_txt!r}")
+    return ok
+
+
 async def _elegir_cuota(page, etiqueta: str, rango: Optional[tuple] = None) -> Optional[float]:
     """
-    Hace clic en una cuota cuyo valor numerico este dentro de `rango` (min, max).
-
-    Recorre las cuotas candidatas (numeros tipo 3.45) y se queda con la primera
-    que caiga en el rango. Si `rango` es None, toma la primera cuota visible.
-    Devuelve el valor de la cuota elegida, o None si no encontro ninguna.
+    Hace clic en una cuota (botón Kambi con data-outcome-id + .original-odds) cuyo
+    valor esté dentro de `rango`. Si `rango` es None, toma la primera disponible.
+    Devuelve el valor de la cuota elegida, o None si no encontró ninguna.
     """
-    candidatos = page.locator(SEL_CUOTA).filter(has_text=re.compile(r"\d\.\d{1,2}"))
+    frame = await _frame_con(page, SEL_CUOTA_BTN, timeout=10000)
+    if frame is None:
+        logger.warning(f"[{etiqueta}] No se encontraron cuotas en la página.")
+        return None
+
+    botones = frame.locator(SEL_CUOTA_BTN)
     try:
-        total = await candidatos.count()
+        total = await botones.count()
     except ERRORES_PW:
         return None
 
     for i in range(min(total, MAX_CUOTAS_INSPECCIONAR)):
-        elemento = candidatos.nth(i)
+        btn = botones.nth(i)
         try:
-            texto = (await elemento.inner_text(timeout=2000)).strip()
+            texto = (await btn.locator(SEL_CUOTA_VALOR).first.inner_text(timeout=2000)).strip()
         except ERRORES_PW:
             continue
         m = re.search(r"(\d+\.\d{1,2})", texto)
@@ -738,13 +1224,57 @@ async def _elegir_cuota(page, etiqueta: str, rango: Optional[tuple] = None) -> O
             continue
         valor = float(m.group(1))
         if rango is None or (rango[0] <= valor <= rango[1]):
+            # Filtro horario (hoy/mañana + tarde-noche) si hay selector de hora.
+            if SEL_EVENTO_HORA and not await _cuota_en_horario(btn, etiqueta):
+                continue
             try:
-                await elemento.click(timeout=4000)
+                await btn.click(timeout=4000)
                 logger.info(f"[{etiqueta}] Cuota elegida: {valor}")
                 return valor
             except ERRORES_PW:
                 continue
     return None
+
+
+async def _leer_betslip(page, etiqueta: str = "") -> str:
+    """
+    Extrae del cupón (betslip Kambi) qué se apostó: evento, mercado, selección y
+    cuota, para mostrárselo al usuario. Devuelve una descripción legible.
+    """
+    frame = await _frame_con(page, SEL_BETSLIP, timeout=8000)
+    if frame is None:
+        return "apuesta"
+
+    async def _txt(sel: str) -> str:
+        try:
+            return (await frame.locator(sel).first.inner_text(timeout=3000)).strip()
+        except ERRORES_PW:
+            return ""
+
+    evento = await _txt(SEL_BETSLIP_EVENTO)
+    pick = await _txt(SEL_BETSLIP_PICK)
+    mercado = await _txt(SEL_BETSLIP_MERCADO)
+    cuota = await _txt(SEL_BETSLIP_CUOTA)
+    detalle = " | ".join(p for p in (evento, f"{mercado}: {pick}".strip(": "), f"@{cuota}" if cuota else "") if p)
+    logger.info(f"[{etiqueta}] Cupón armado: {detalle}")
+    return detalle or "apuesta"
+
+
+async def _escribir_monto_betslip(page, etiqueta: str, monto: float) -> bool:
+    """Escribe el stake en el input del cupón Kambi. True si lo logró."""
+    frame = await _frame_con(page, SEL_MONTO_APUESTA, timeout=8000)
+    if frame is None:
+        logger.warning(f"[{etiqueta}] No se encontró el campo de monto del cupón.")
+        return False
+    try:
+        campo = frame.locator(SEL_MONTO_APUESTA).first
+        await campo.click(timeout=4000)
+        await campo.fill(str(int(monto)))
+        await human_delay(1, 2)
+        return True
+    except ERRORES_PW as e:
+        logger.warning(f"[{etiqueta}] No se pudo escribir el monto: {e}")
+        return False
 
 
 async def apostar(
@@ -756,46 +1286,45 @@ async def apostar(
     tipo: str = "saldo",
 ) -> str:
     """
-    Prepara una apuesta (evento + cuota + monto) y PAUSA para que el usuario de
-    el clic final de 'Apostar' (preparar y pausar). No confirma la apuesta.
+    Prepara una apuesta (Deportes → cuota → monto en el cupón) y PAUSA para que el
+    usuario dé el clic final de 'Apostar'. No confirma la apuesta por su cuenta.
 
-    Para tipo="bono" busca partidos populares con cuotas 3.0-6.0
-    (RANGO_CUOTA_BONO); para tipo="saldo" toma la primera cuota disponible.
-
-    Devuelve: 'preparada', 'sin_monto', 'sin_cuota' o 'error'.
+    Para tipo="bono" busca una cuota 3.0-6.0 (RANGO_CUOTA_BONO); para tipo="saldo"
+    toma la primera disponible. Devuelve una descripción ('preparada: <detalle>')
+    o un estado: 'sin_monto', 'sin_cuota' o 'error'.
     """
     if not monto or monto <= 0:
         logger.warning(f"[{etiqueta}] Apostar {tipo}: monto invalido ({monto}); se omite.")
         return "sin_monto"
     try:
-        logger.info(f"[{etiqueta}] Apostar {tipo}: preparando cupon por {monto:,.0f}...")
-        await page.goto(f"{base_url}{RUTA_FUTBOL}", wait_until="networkidle", timeout=20000)
+        logger.info(f"[{etiqueta}] Apostar {tipo}: preparando cupón por {monto:,.0f}...")
+        await _ir_a_deportes(page, base_url, etiqueta)
         await human_delay(3, 6)
 
-        # Evento popular (liga conocida) + una cuota segun el tipo de apuesta.
-        await page.locator(f"text=/{LIGAS_REGEX}/i").first.click()
-        await human_delay(2.5, 5)
-
+        # Elegir una cuota (en rango para bono, primera para saldo) y clicarla.
         rango = RANGO_CUOTA_BONO if tipo == "bono" else None
         cuota = await _elegir_cuota(page, etiqueta, rango)
         if cuota is None:
             destino = f"{rango[0]}-{rango[1]}" if rango else "cualquiera"
-            logger.warning(f"[{etiqueta}] No se encontro cuota en el rango {destino}; se omite.")
+            logger.warning(f"[{etiqueta}] No se encontró cuota en el rango {destino}; se omite.")
             return "sin_cuota"
         await human_delay(2, 4)
 
-        # Escribir el monto en el cupon.
-        await page.locator(SEL_MONTO_APUESTA).first.fill(str(int(monto)))
-        await human_delay(1.5, 3)
+        # Leer del cupón qué se armó (para reportarlo al usuario).
+        detalle = await _leer_betslip(page, etiqueta)
+
+        # Escribir el monto en el cupón.
+        if not await _escribir_monto_betslip(page, etiqueta, monto):
+            return "sin_monto"
 
         # Preparar y pausar: el usuario confirma manualmente (mismo mecanismo del CAPTCHA).
         logger.warning(
-            f"[{etiqueta}] Apuesta {tipo} preparada (cuota {cuota}) por {monto:,.0f}. "
+            f"[{etiqueta}] Apuesta {tipo} PREPARADA: {detalle} por {monto:,.0f}. "
             "Revisa y confirma a mano."
         )
         if confirmar_waiter is not None:
             await confirmar_waiter("apuesta")
-        return "preparada"
+        return f"preparada: {detalle}"
     except ERRORES_PW as e:
         logger.warning(f"[{etiqueta}] No se pudo preparar la apuesta {tipo}: {e}")
         return "error"

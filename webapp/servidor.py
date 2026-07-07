@@ -11,9 +11,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, UploadFile, File
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+import io as _io
+import pandas as _pd
 
 import control
 from webapp import datos
@@ -86,6 +88,43 @@ def api_forzar_parada():
     if proc is not None and proc.poll() is None:
         proc.terminate()
     return {"ok": True}
+
+
+# ---------------- API: cuentas ----------------
+
+@app.get("/api/cuentas")
+def api_cuentas_get():
+    return datos.cuentas_como_dict()
+
+
+@app.post("/api/cuentas")
+async def api_cuentas_post(request: Request):
+    body = await request.json()
+    n = datos.guardar_cuentas(body.get("filas", []))
+    return {"ok": True, "guardadas": n}
+
+
+@app.post("/api/cuentas/plantilla")
+async def api_cuentas_plantilla(request: Request):
+    body = await request.json()
+    df = datos.generar_plantilla_registro(int(body.get("n", 10)))
+    df.to_excel(datos.RUTA_EXCEL, index=False)
+    return {"ok": True, "guardadas": len(df)}
+
+
+@app.post("/api/cuentas/registrar")
+async def api_cuentas_registrar(request: Request):
+    fila = await request.json()
+    total = datos.anexar_cuenta(fila)
+    return {"ok": True, "total": total}
+
+
+@app.post("/api/cuentas/importar")
+async def api_cuentas_importar(archivo: UploadFile = File(...)):
+    contenido = await archivo.read()
+    df = _pd.read_excel(_io.BytesIO(contenido))
+    df.to_excel(datos.RUTA_EXCEL, index=False)
+    return {"ok": True, "guardadas": len(df)}
 
 
 # ---------------- Estáticos (al final para no tapar /api) ----------------
