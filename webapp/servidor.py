@@ -90,6 +90,17 @@ def api_forzar_parada():
     return {"ok": True}
 
 
+@app.post("/api/codigo")
+async def api_codigo(request: Request):
+    """Recibe el código 2FA que el usuario ingresó a mano (modo manual)."""
+    body = await request.json()
+    codigo = str(body.get("codigo", "")).strip()
+    if not codigo:
+        return JSONResponse({"error": "Código vacío"}, status_code=400)
+    control.guardar_codigo(codigo)
+    return {"ok": True}
+
+
 # ---------------- API: cuentas ----------------
 
 @app.get("/api/cuentas")

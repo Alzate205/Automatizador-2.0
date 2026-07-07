@@ -47,6 +47,13 @@ def test_detener_y_continuar_crean_senales(tmp_path, monkeypatch):
     assert os.path.exists(tmp_path / "senal_continuar.flag")
 
 
+def test_enviar_codigo(tmp_path, monkeypatch):
+    c = _client(tmp_path, monkeypatch)
+    r = c.post("/api/codigo", json={"codigo": "123456"})
+    assert r.status_code == 200 and r.json()["ok"] is True
+    assert (tmp_path / "codigo_2fa.txt").read_text(encoding="utf-8").strip() == "123456"
+
+
 def test_cuentas_get_post(tmp_path, monkeypatch):
     c = _client(tmp_path, monkeypatch)
     r = c.post("/api/cuentas", json={"filas": [{"Usuario": "a@b.com", "Modo": "login"}]})

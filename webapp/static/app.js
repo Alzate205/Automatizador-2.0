@@ -52,6 +52,7 @@ function leerConfig() {
     cuentas_seleccionadas: [],
     rotar_ip: $('#rotar-ip').checked,
     rotar_ip_solo_registro: $('#rotar-solo-reg').checked,
+    codigo_manual: $('#codigo-manual').checked,
   };
 }
 
@@ -97,13 +98,34 @@ async function pollEstado() {
       `${e.estado} — ${e.fase || ''} — ${e.cuenta || ''} (${e.indice || 0}/${e.total || 0})`;
     const pct = e.total ? Math.round((e.indice / e.total) * 100) : 0;
     $('#barra-progreso').style.width = pct + '%';
-    const corriendo = e.proceso_vivo || ['corriendo', 'esperando_captcha', 'esperando_apuesta'].includes(e.estado);
+    const corriendo = e.proceso_vivo || ['corriendo', 'esperando_captcha', 'esperando_apuesta', 'esperando_codigo'].includes(e.estado);
     const esperando = ['esperando_captcha', 'esperando_apuesta'].includes(e.estado);
     $('#btn-iniciar').disabled = corriendo;
     $('#btn-detener').disabled = !corriendo;
     $('#btn-continuar').disabled = !esperando;
+
+    // Casilla de código 2FA manual: aparece solo cuando el bot lo pide.
+    const pideCodigo = e.estado === 'esperando_codigo';
+    const wrap = $('#codigo-wrap');
+    if (pideCodigo) {
+      if (wrap.hidden) { wrap.hidden = false; $('#codigo-input').focus(); }
+      $('#codigo-msg').textContent = e.mensaje || 'El bot espera el código de correo.';
+    } else if (!wrap.hidden) {
+      wrap.hidden = true;
+      $('#codigo-input').value = '';
+    }
   } catch (e) { /* ídem */ }
 }
+
+async function enviarCodigo() {
+  const val = $('#codigo-input').value.trim();
+  if (!val) return;
+  await post('/api/codigo', { codigo: val });
+  $('#codigo-input').value = '';
+  $('#codigo-wrap').hidden = true;  // el próximo pollEstado confirma el cambio de estado
+}
+$('#btn-enviar-codigo').onclick = enviarCodigo;
+$('#codigo-input').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') enviarCodigo(); });
 
 async function actualizarContador() {
   try {

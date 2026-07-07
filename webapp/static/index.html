@@ -57,10 +57,18 @@
           </select>
         </label>
         <label><input type="checkbox" id="usar-gestor" checked> Usar gestor de perfiles</label>
+        <label><input type="checkbox" id="codigo-manual"> Código de correo manual</label>
+        <p class="ayuda">Para cuentas sin clave de correo: el bot se pausa y te pide el código aquí.</p>
       </aside>
       <div id="panel">
         <div id="cabecera-estado">Inactivo</div>
         <div id="progreso-wrap"><div id="barra-progreso"></div></div>
+        <div id="codigo-wrap" hidden>
+          <span id="codigo-msg">El bot espera el código de correo.</span>
+          <input type="text" id="codigo-input" inputmode="numeric" autocomplete="one-time-code"
+                 placeholder="Código del correo" maxlength="12">
+          <button id="btn-enviar-codigo" class="accion primaria compacta">Enviar código</button>
+        </div>
         <pre id="consola"></pre>
       </div>
     </section>

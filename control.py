@@ -26,10 +26,11 @@ ESTADO_JSON = "estado_bot.json"
 CONFIG_JSON = "config_run.json"
 SENAL_DETENER = "senal_detener.flag"
 SENAL_CONTINUAR = "senal_continuar.flag"
+CODIGO_2FA = "codigo_2fa.txt"
 LOG_BOT = "bot.log"
 
 ESTADO_POR_DEFECTO: Dict[str, Any] = {
-    "estado": "inactivo",   # inactivo|corriendo|esperando_captcha|detenido|finalizado|error
+    "estado": "inactivo",   # inactivo|corriendo|esperando_captcha|esperando_codigo|detenido|finalizado|error
     "indice": 0,
     "total": 0,
     "cuenta": "",
@@ -136,7 +137,39 @@ def limpiar_continuar() -> None:
     _borrar(SENAL_CONTINUAR)
 
 
+# ---------------------------------------------------------------------------
+# Canal del codigo 2FA manual (dashboard -> bot)
+# ---------------------------------------------------------------------------
+#
+# codigo_2fa.txt: el panel escribe aqui el codigo que el usuario ingreso a mano
+# (cuentas sin ClaveCorreo, con "codigo_manual" activado). Su existencia indica
+# que hay un codigo pendiente; su contenido es el codigo. El bot lo lee y lo borra.
+
+def guardar_codigo(codigo: str) -> None:
+    with open(CODIGO_2FA, "w", encoding="utf-8") as f:
+        f.write(str(codigo).strip())
+
+
+def hay_codigo() -> bool:
+    return _existe(CODIGO_2FA)
+
+
+def leer_codigo() -> str | None:
+    """Devuelve el codigo pendiente (recortado) o None si no hay."""
+    try:
+        with open(CODIGO_2FA, encoding="utf-8") as f:
+            valor = f.read().strip()
+    except FileNotFoundError:
+        return None
+    return valor or None
+
+
+def limpiar_codigo() -> None:
+    _borrar(CODIGO_2FA)
+
+
 def reset_control() -> None:
     """Limpia las senales antes de una nueva corrida."""
     limpiar_detener()
     limpiar_continuar()
+    limpiar_codigo()

@@ -30,6 +30,11 @@ body{margin:0;background:var(--bg);color:var(--txt);font-family:Segoe UI,system-
 #cabecera-estado{padding:10px 14px;border-bottom:1px solid var(--borde);font-weight:600}
 #progreso-wrap{height:8px;background:var(--panel2)}
 #barra-progreso{height:100%;width:0;background:var(--verde);transition:width .3s}
+#sidebar .ayuda{font-size:11px;color:var(--muted);margin:4px 0 0}
+#codigo-wrap{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 14px;background:rgba(59,130,246,.12);border-bottom:1px solid var(--azul)}
+#codigo-wrap #codigo-msg{color:var(--txt);font-weight:600}
+#codigo-input{background:var(--panel2);color:var(--txt);border:1px solid var(--borde);border-radius:6px;padding:8px 10px;font-size:15px;letter-spacing:2px;width:160px}
+#codigo-input:focus{outline:1px solid var(--azul)}
 #consola{flex:1;margin:0;padding:14px;overflow:auto;font-family:Consolas,monospace;font-size:13px;line-height:1.5;white-space:pre-wrap}
 .log-info{color:var(--txt)} .log-exito{color:var(--verde)} .log-aviso{color:var(--amarillo)} .log-error{color:var(--rojo)}
 .barra-acciones{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:14px}

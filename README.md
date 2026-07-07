@@ -47,7 +47,9 @@ iniciar.bat        # o: python -m uvicorn webapp.servidor:app --port 8000
 Abre `http://localhost:8000`. Tres secciones en una sola página:
 
 - **Control** — iniciar/detener/continuar el bot, consola en vivo con colores y
-  barra de progreso.
+  barra de progreso. Incluye **"Código de correo manual"**: para cuentas sin
+  `ClaveCorreo`, el bot se pausa y te pide el código 2FA en una casilla del panel
+  (lo lees en tu correo y lo envías); las cuentas con `ClaveCorreo` lo leen solas.
 - **Cuentas** — tabla **editable en pantalla** de `cuentas.xlsx` (agregar/borrar
   filas, selector de `Modo`, ocultar/mostrar contraseñas). Además **importar** y
   **descargar** Excel cuando lo prefieras (las dos maneras).

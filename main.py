@@ -88,6 +88,10 @@ ROTAR_IP_SEG_MIN = 5.0          # segundos en modo avion (minimo)
 ROTAR_IP_SEG_MAX = 10.0         # segundos en modo avion (maximo)
 ROTAR_IP_VERIFICAR = True       # consultar IP publica antes/despues para avisar si no cambio
 
+# Codigo 2FA manual: si esta activo, las cuentas SIN ClaveCorreo pausan el bot y
+# piden el codigo por el panel en vez de leerlo por IMAP (cfg["codigo_manual"]).
+CODIGO_MANUAL = False
+
 
 # ---------------------------------------------------------------------------
 # RESOLUCIÓN DEL NAVEGADOR (endpoint CDP)
@@ -214,6 +218,37 @@ async def _confirmar_waiter(motivo: str = "captcha") -> None:
     control.escribir_estado(estado="corriendo", fase="post-confirmacion", mensaje="Continuando")
 
 
+async def _codigo_manual_waiter(etiqueta: str) -> str | None:
+    """
+    Proveedor de codigo 2FA MANUAL: pausa el bot en 'esperando_codigo' y espera a
+    que el panel escriba el codigo (senal codigo_2fa.txt). Devuelve el codigo o
+    None si se pide detener o se agota TIMEOUT_CAPTCHA_SEG. Espejo de
+    _confirmar_waiter, pero devolviendo un valor.
+    """
+    control.limpiar_codigo()
+    control.escribir_estado(
+        estado="esperando_codigo", fase="codigo_2fa",
+        mensaje=f"Ingresa el codigo de correo de la cuenta: {etiqueta}",
+    )
+    log.warning(f"[{etiqueta}] Esperando el codigo 2FA manual desde el panel...")
+    esperado = 0
+    while not control.hay_codigo():
+        if control.hay_senal_detener():
+            control.escribir_estado(estado="corriendo", fase="codigo_2fa", mensaje="Cancelado")
+            return None
+        await asyncio.sleep(2)
+        esperado += 2
+        if esperado >= TIMEOUT_CAPTCHA_SEG:
+            log.warning(f"[{etiqueta}] Timeout esperando el codigo manual; sigo sin codigo.")
+            control.escribir_estado(estado="corriendo", fase="codigo_2fa", mensaje="Sin codigo (timeout)")
+            return None
+    codigo = control.leer_codigo()
+    control.limpiar_codigo()
+    control.escribir_estado(estado="corriendo", fase="codigo_2fa", mensaje="Codigo recibido")
+    log.info(f"[{etiqueta}] Codigo 2FA manual recibido del panel.")
+    return codigo
+
+
 # ---------------------------------------------------------------------------
 # PROCESAMIENTO DE UNA FILA
 # ---------------------------------------------------------------------------
@@ -258,6 +293,11 @@ async def procesar_fila(row, perfil_id: int, tareas: set, apuesta_cfg: dict) -> 
     if email and clave_correo:
         async def code_provider():
             return await esperar_y_extraer_codigo(str(email), clave_correo, REMITENTE_2FA)
+    elif CODIGO_MANUAL:
+        # Sin ClaveCorreo y con modo manual activo: pausamos y pedimos el codigo
+        # por el panel en vez de leerlo por IMAP.
+        async def code_provider():
+            return await _codigo_manual_waiter(etiqueta)
 
     # Datos para el modo registro: limpiamos NaN -> "" para no romper el tecleo.
     datos = {k: ("" if pd.isna(v) else v) for k, v in row.to_dict().items()}
@@ -363,8 +403,9 @@ async def main() -> None:
 
     # Config de la corrida (la escribe el dashboard); por defecto si no existe.
     cfg = control.leer_config()
-    global USAR_GESTOR_PERFILES, ROTAR_IP
+    global USAR_GESTOR_PERFILES, ROTAR_IP, CODIGO_MANUAL
     USAR_GESTOR_PERFILES = bool(cfg.get("usar_gestor", USAR_GESTOR_PERFILES))
+    CODIGO_MANUAL = bool(cfg.get("codigo_manual", CODIGO_MANUAL))
     pausa_min = float(cfg.get("pausa_min", PAUSA_MIN_MINUTOS))
     pausa_max = float(cfg.get("pausa_max", PAUSA_MAX_MINUTOS))
     filtro_modo = str(cfg.get("filtro_modo", "todo")).strip().lower()
