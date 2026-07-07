@@ -38,7 +38,24 @@ Dependencias clave: `streamlit`, `pandas`, `openpyxl`, `altair`, `playwright`,
 
 ## Uso
 
-### 1. Panel de control (recomendado)
+### 1. Panel web (nuevo, recomendado)
+
+```bash
+iniciar.bat        # o: python -m uvicorn webapp.servidor:app --port 8000
+```
+
+Abre `http://localhost:8000`. Tres secciones en una sola página:
+
+- **Control** — iniciar/detener/continuar el bot, consola en vivo con colores y
+  barra de progreso.
+- **Cuentas** — tabla **editable en pantalla** de `cuentas.xlsx` (agregar/borrar
+  filas, selector de `Modo`, ocultar/mostrar contraseñas). Además **importar** y
+  **descargar** Excel cuando lo prefieras (las dos maneras).
+- **Estadísticas** — métricas, gráficas (SVG propio, sin internet) y exportación.
+
+Reemplaza al panel Streamlit. No requiere internet en runtime (sin CDNs).
+
+### 2. Panel Streamlit (legado)
 
 ```bash
 streamlit run dashboard.py
