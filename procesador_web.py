@@ -535,6 +535,59 @@ async def _elegir_lugar_expedicion(page, valor: Any, etq: str) -> bool:
     return False
 
 
+async def _click_boton_registro(page, etq: str) -> bool:
+    """
+    Hace clic en "Registrarse" de la home de Betplay de forma robusta.
+
+    En la práctica hay variantes del botón (móvil/escritorio) y la primera que
+    resuelve el selector puede estar OCULTA (Playwright falla con "element is not
+    visible"). Aquí probamos varios selectores prefiriendo los VISIBLES, con
+    scroll hacia el elemento y, como último recurso, un clic forzado.
+    """
+    selectores = [
+        "button#register:visible",
+        "button.btn-registro:visible",
+        "a#register:visible",
+        "button:has-text('Registrarse'):visible",
+        "a:has-text('Registrarse'):visible",
+        "button:has-text('Crear cuenta'):visible",
+    ]
+    for sel in selectores:
+        loc = page.locator(sel).first
+        try:
+            await loc.wait_for(state="visible", timeout=3000)
+        except ERRORES_PW:
+            continue
+        try:
+            await loc.scroll_into_view_if_needed(timeout=2000)
+        except ERRORES_PW:
+            pass
+        try:
+            await loc.click(timeout=5000)
+            logger.info(f"[{etq}] Click en 'Registrarse' ({sel}).")
+            return True
+        except ERRORES_PW:
+            continue
+
+    # Respaldo por rol accesible.
+    try:
+        await page.get_by_role("button", name=re.compile(r"Registr", re.I)).first.click(timeout=5000)
+        logger.info(f"[{etq}] Click en 'Registrarse' (por rol).")
+        return True
+    except ERRORES_PW:
+        pass
+
+    # Último recurso: clic FORZADO aunque se reporte 'no visible'.
+    for sel in ("button#register", "button.btn-registro"):
+        try:
+            await page.locator(sel).first.click(force=True, timeout=4000)
+            logger.warning(f"[{etq}] Click FORZADO en 'Registrarse' ({sel}).")
+            return True
+        except ERRORES_PW:
+            continue
+    return False
+
+
 async def _captura_fallo(page, etiqueta: str, motivo: str = "") -> str:
     """
     Guarda un pantallazo del estado actual en CARPETA_CAPTURAS cuando un registro
@@ -636,10 +689,11 @@ async def registrar_cuenta(
         await page.goto(base_url, wait_until="domcontentloaded", timeout=45000)
         await human_delay(3, 6)
 
-        # Boton de registro: selector real de Betplay (.btn-registro) o por texto.
-        await page.locator("button.btn-registro").or_(
-            page.get_by_text(re.compile(r"Registrarse|Crear cuenta|Registro", re.IGNORECASE))
-        ).first.click(timeout=12000)
+        # Boton de registro: robusto ante variantes ocultas (movil/escritorio).
+        if not await _click_boton_registro(page, etq):
+            await _captura_fallo(page, etq, "no se pudo abrir el registro (boton Registrarse)")
+            return {"ok": False, "estado": "error_registro",
+                    "mensaje": "No se pudo hacer clic en 'Registrarse' (boton no visible)"}
         await human_delay(3, 5)
 
         # Tipo de documento: <select formcontrolname="documentType"> (por value:
