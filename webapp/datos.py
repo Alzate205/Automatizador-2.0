@@ -28,10 +28,11 @@ COLUMNAS_SENSIBLES = ["Password", "ClaveCorreo"]
 COLUMNAS_PLANTILLA = [
     "Usuario", "Password", "Nombre", "Correo", "ClaveCorreo", "Puerto", "Modo",
     "Cedula", "PrimerNombre", "SegundoNombre", "PrimerApellido", "SegundoApellido",
-    "Telefono",
+    "Genero", "Telefono",
     "ExpedicionDD", "ExpedicionMM", "ExpedicionYYYY",
     "NacimientoDD", "NacimientoMM", "NacimientoYYYY",
     "LugarExpedicion",
+    "TipoVia", "Direccion1", "Direccion2", "Direccion3", "Ciudad",
 ]
 
 
@@ -51,10 +52,12 @@ def generar_plantilla_registro(n: int = 10) -> pd.DataFrame:
             "Usuario": "", "Password": "", "Nombre": f"Cuenta {i + 1}",
             "Correo": "", "ClaveCorreo": "", "Puerto": 9222 + i, "Modo": "registro",
             "Cedula": "", "PrimerNombre": "", "SegundoNombre": "",
-            "PrimerApellido": "", "SegundoApellido": "", "Telefono": "",
+            "PrimerApellido": "", "SegundoApellido": "", "Genero": "", "Telefono": "",
             "ExpedicionDD": "15", "ExpedicionMM": "06", "ExpedicionYYYY": "1995",
             "NacimientoDD": "10", "NacimientoMM": "03", "NacimientoYYYY": "1995",
             "LugarExpedicion": "BOGOTA",
+            "TipoVia": "", "Direccion1": "", "Direccion2": "", "Direccion3": "",
+            "Ciudad": "BOGOTA",
         }
     return df
 

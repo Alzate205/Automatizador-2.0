@@ -82,9 +82,11 @@ def test_autoguardado_no_respalda(tmp_path, monkeypatch):
     assert datos.cuentas_como_dict()["filas"][0]["Usuario"] == "b@c.com"
 
 
-def test_plantilla_incluye_segundo_nombre_apellido():
+def test_plantilla_incluye_campos_nuevos():
     df = datos.generar_plantilla_registro(1)
-    assert "SegundoNombre" in df.columns and "SegundoApellido" in df.columns
+    for col in ("SegundoNombre", "SegundoApellido", "Genero",
+                "TipoVia", "Direccion1", "Direccion2", "Direccion3", "Ciudad"):
+        assert col in df.columns, col
 
 
 def test_anexar_cuenta(tmp_path, monkeypatch):

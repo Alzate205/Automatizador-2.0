@@ -4,9 +4,10 @@ const COLUMNAS_SENSIBLES = ['Password', 'ClaveCorreo'];
 const COLUMNAS_BASE = [
   'Usuario', 'Password', 'Nombre', 'Correo', 'ClaveCorreo', 'Puerto', 'Modo',
   'Cedula', 'PrimerNombre', 'SegundoNombre', 'PrimerApellido', 'SegundoApellido',
-  'Telefono',
+  'Genero', 'Telefono',
   'ExpedicionDD', 'ExpedicionMM', 'ExpedicionYYYY',
   'NacimientoDD', 'NacimientoMM', 'NacimientoYYYY', 'LugarExpedicion',
+  'TipoVia', 'Direccion1', 'Direccion2', 'Direccion3', 'Ciudad',
 ];
 
 function escaparHtml(s) {
@@ -161,14 +162,19 @@ function tipoInput(col, verSensibles) {
   return 'text';
 }
 
+function celdaSelect(col, v, opciones) {
+  const actual = v.toLowerCase();
+  const ops = opciones.map(o => {
+    const sel = actual === o.toLowerCase() ? ' selected' : '';
+    return `<option value="${escaparHtml(o)}"${sel}>${o || '(elegir)'}</option>`;
+  }).join('');
+  return `<select data-col="${escaparHtml(col)}">${ops}</select>`;
+}
+
 function celda(col, valor, verSensibles) {
   const v = valor == null ? '' : String(valor);
-  if (col === 'Modo') {
-    const login = v.toLowerCase() === 'login' ? ' selected' : '';
-    const reg = v.toLowerCase() === 'registro' ? ' selected' : '';
-    return `<select data-col="${col}"><option value="login"${login}>login</option>` +
-      `<option value="registro"${reg}>registro</option></select>`;
-  }
+  if (col === 'Modo') return celdaSelect(col, v, ['login', 'registro']);
+  if (col === 'Genero') return celdaSelect(col, v, ['', 'Masculino', 'Femenino']);
   const tipo = tipoInput(col, verSensibles);
   return `<input type="${tipo}" data-col="${col}" value="${escaparHtml(v)}">`;
 }
