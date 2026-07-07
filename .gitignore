@@ -15,6 +15,9 @@ historial_auditoria.csv
 # Capturas de pantalla de registros fallidos (se generan en cada corrida)
 capturas/
 
+# Respaldos automáticos de cuentas.xlsx (se generan antes de cada sobrescritura)
+backups_cuentas/
+
 # Proxies (puede contener credenciales user:pass@ip:port; no versionar)
 proxies.txt
 

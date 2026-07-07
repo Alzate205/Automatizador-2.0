@@ -5,14 +5,20 @@ Extraído/adaptado de dashboard.py (Streamlit) para reusarlo desde servidor.py.
 """
 from __future__ import annotations
 
+import glob
 import io
 import os
 import re
+import shutil
 from datetime import datetime
 
 import pandas as pd
 
 RUTA_EXCEL = "cuentas.xlsx"
+
+# Respaldos automáticos de cuentas.xlsx antes de cada sobrescritura.
+CARPETA_BACKUPS = "backups_cuentas"
+MAX_BACKUPS = 20
 RUTA_RESULTADOS = "cuentas_actualizadas.xlsx"
 RUTA_HISTORIAL = "historial_auditoria.csv"
 LOG_BOT = "bot.log"
@@ -125,18 +131,57 @@ def cuentas_como_dict() -> dict:
     return {"columnas": list(df.columns), "filas": df.to_dict(orient="records")}
 
 
-def guardar_cuentas(filas: list) -> int:
-    df = pd.DataFrame(filas)
-    df.to_excel(RUTA_EXCEL, index=False)
+def _respaldar(ruta: str) -> str:
+    """Copia el archivo (si existe) a backups_cuentas/<nombre>_<timestamp>.xlsx.
+
+    El respaldo va JUNTO al archivo (misma carpeta), conserva los últimos
+    MAX_BACKUPS y nunca lanza. Devuelve la ruta del respaldo o "".
+    """
+    if not os.path.exists(ruta):
+        return ""
+    try:
+        carpeta = os.path.join(os.path.dirname(ruta) or ".", CARPETA_BACKUPS)
+        os.makedirs(carpeta, exist_ok=True)
+        nombre, ext = os.path.splitext(os.path.basename(ruta))
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        destino = os.path.join(carpeta, f"{nombre}_{ts}{ext}")
+        shutil.copy2(ruta, destino)
+        # Poda: conserva solo los MAX_BACKUPS más recientes.
+        viejos = sorted(glob.glob(os.path.join(carpeta, f"{nombre}_*{ext}")))
+        for v in viejos[:-MAX_BACKUPS]:
+            try:
+                os.remove(v)
+            except OSError:
+                pass
+        return destino
+    except Exception:  # noqa: BLE001  (el respaldo nunca debe romper el guardado)
+        return ""
+
+
+def guardar_excel_seguro(df: pd.DataFrame, ruta: str = RUTA_EXCEL) -> int:
+    """Respalda el archivo previo y lo escribe de forma ATÓMICA (.tmp + replace).
+
+    Así un fallo a mitad de escritura no deja el archivo corrupto, y siempre queda
+    una copia con fecha en backups_cuentas/ por si hay que recuperar.
+    """
+    _respaldar(ruta)
+    # El temporal conserva la extensión .xlsx (openpyxl rechaza otras como .tmp).
+    tmp = os.path.join(os.path.dirname(ruta) or ".", f".tmp_{os.path.basename(ruta)}")
+    with pd.ExcelWriter(tmp, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False)
+    os.replace(tmp, ruta)
     return len(df)
+
+
+def guardar_cuentas(filas: list) -> int:
+    return guardar_excel_seguro(pd.DataFrame(filas), RUTA_EXCEL)
 
 
 def anexar_cuenta(fila: dict) -> int:
     df = leer_excel(RUTA_EXCEL)
     nueva = pd.DataFrame([fila])
     df = pd.concat([df, nueva], ignore_index=True) if not df.empty else nueva
-    df.to_excel(RUTA_EXCEL, index=False)
-    return len(df)
+    return guardar_excel_seguro(df, RUTA_EXCEL)
 
 
 def to_excel_bytes(df: pd.DataFrame) -> bytes:

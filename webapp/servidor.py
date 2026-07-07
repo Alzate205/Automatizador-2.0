@@ -119,7 +119,7 @@ async def api_cuentas_post(request: Request):
 async def api_cuentas_plantilla(request: Request):
     body = await request.json()
     df = datos.generar_plantilla_registro(int(body.get("n", 10)))
-    df.to_excel(datos.RUTA_EXCEL, index=False)
+    datos.guardar_excel_seguro(df, datos.RUTA_EXCEL)
     return {"ok": True, "guardadas": len(df)}
 
 
@@ -134,7 +134,7 @@ async def api_cuentas_registrar(request: Request):
 async def api_cuentas_importar(archivo: UploadFile = File(...)):
     contenido = await archivo.read()
     df = _pd.read_excel(_io.BytesIO(contenido))
-    df.to_excel(datos.RUTA_EXCEL, index=False)
+    datos.guardar_excel_seguro(df, datos.RUTA_EXCEL)
     return {"ok": True, "guardadas": len(df)}
 
 

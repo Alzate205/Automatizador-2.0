@@ -54,6 +54,23 @@ def test_guardar_y_leer_cuentas(tmp_path, monkeypatch):
     assert "Usuario" in d["columnas"]
 
 
+def test_guardar_hace_backup_atomico(tmp_path, monkeypatch):
+    ruta = tmp_path / "cuentas.xlsx"
+    monkeypatch.setattr(datos, "RUTA_EXCEL", str(ruta))
+    # Primer guardado: no hay backup (el archivo no existía).
+    datos.guardar_cuentas([{"Usuario": "a@b.com"}])
+    carpeta_bk = tmp_path / datos.CARPETA_BACKUPS
+    assert not carpeta_bk.exists() or not list(carpeta_bk.glob("cuentas_*.xlsx"))
+    # Segundo guardado (sobrescribe): debe respaldar la versión previa.
+    datos.guardar_cuentas([{"Usuario": "c@d.com"}])
+    backups = list(carpeta_bk.glob("cuentas_*.xlsx"))
+    assert len(backups) == 1
+    prev = pd.read_excel(backups[0])
+    assert prev["Usuario"].iloc[0] == "a@b.com"  # el backup tiene lo ANTERIOR
+    # No queda ningún temporal tras la escritura atómica.
+    assert not list(tmp_path.glob(".tmp_*"))
+
+
 def test_anexar_cuenta(tmp_path, monkeypatch):
     ruta = tmp_path / "cuentas.xlsx"
     monkeypatch.setattr(datos, "RUTA_EXCEL", str(ruta))
