@@ -211,7 +211,10 @@ $('#btn-guardar-cuentas').onclick = async () => {
 };
 
 $('#btn-plantilla').onclick = async () => {
-  await post('/api/cuentas/plantilla', { n: parseInt($('#plantilla-n').value) || 10 });
+  const n = parseInt($('#plantilla-n').value) || 10;
+  if (!confirm(`Esto REEMPLAZA la lista actual por una plantilla de ${n} cuenta(s).\n` +
+               `Se guarda un respaldo automático antes. ¿Continuar?`)) return;
+  await post('/api/cuentas/plantilla', { n });
   cargarCuentas();
   actualizarContador();
 };
@@ -220,6 +223,11 @@ $('.importar').onclick = () => $('#importar-archivo').click();
 $('#importar-archivo').onchange = async (ev) => {
   const f = ev.target.files[0];
   if (!f) return;
+  if (!confirm(`Importar "${f.name}" REEMPLAZA toda la lista actual de cuentas.\n` +
+               `Se guarda un respaldo automático antes. ¿Continuar?`)) {
+    ev.target.value = '';
+    return;
+  }
   const fd = new FormData();
   fd.append('archivo', f);
   await fetch('/api/cuentas/importar', { method: 'POST', body: fd });
