@@ -292,6 +292,24 @@ def _valor_tipo_via(datos: Dict[str, Any]) -> str:
     return TIPO_VIA_VALORES.get(_sin_tildes(bruto), "CL")  # por defecto Calle
 
 
+def _ciudad_lugar_expedicion(valor: Any) -> str:
+    """Texto que se TECLEA en el autocompletar: la ciudad, sin el departamento.
+
+    'ARMENIA (QUINDIO)' -> 'ARMENIA'; 'ARMENIA, QUINDIO' -> 'ARMENIA'.
+    """
+    ciudad = re.split(r"[(,]", str(valor or ""))[0].strip()
+    return ciudad or "BOGOTA"
+
+
+def _claves_lugar_expedicion(valor: Any) -> list:
+    """Palabras que la opción del autocompletar debe contener (ciudad + depto).
+
+    'ARMENIA (QUINDIO)' -> ['armenia', 'quindio']; 'BOGOTA' -> ['bogota'].
+    Sirve para elegir la opción correcta cuando hay ciudades homónimas.
+    """
+    return [p for p in re.split(r"[()\s,]+", _sin_tildes(valor)) if p]
+
+
 def _norm_dia(valor: Any, defecto: str = "") -> str:
     """Día SIN cero a la izquierda: los <option> de expeditionDay usan '1'..'31'."""
     try:
@@ -450,6 +468,73 @@ def _partir_dos(principal, secundario) -> tuple:
     return " ".join(partes[:-1]), partes[-1]
 
 
+async def _elegir_lugar_expedicion(page, valor: Any, etq: str) -> bool:
+    """
+    Llena el AUTOCOMPLETAR de "Lugar de expedición": escribe la ciudad, espera la
+    lista y hace clic en la opción correcta.
+
+    Hay ciudades homónimas (p. ej. ARMENIA en Quindío y en Antioquia). Para elegir
+    bien, pon en LugarExpedicion el texto con el departamento como aparece en la
+    lista: 'ARMENIA (QUINDIO)'. Si solo pones la ciudad y hay varias opciones, se
+    toma la primera que coincida (con aviso). Devuelve True si hizo clic.
+    """
+    campo = 'input[formcontrolname="expeditionPlace"]'
+    ciudad = _ciudad_lugar_expedicion(valor)
+    claves = _claves_lugar_expedicion(valor)
+    await human_type(page, campo, ciudad)
+    await human_delay(1.2, 2.2)  # deja cargar el desplegable
+
+    # Localizadores candidatos para las opciones (cubre varias librerías de UI).
+    candidatos = [
+        page.get_by_role("option"),
+        page.locator("mat-option"),
+        page.locator("[role='option'], .mat-option, .autocomplete-option, "
+                     "ngb-typeahead-window button, ul.dropdown-menu li, li.option"),
+    ]
+    for loc in candidatos:
+        try:
+            n = await loc.count()
+        except Exception:  # noqa: BLE001
+            continue
+        if not n:
+            continue
+        exacta = None
+        solo_ciudad = None
+        for i in range(min(n, 25)):
+            op = loc.nth(i)
+            try:
+                txt = _sin_tildes(await op.inner_text(timeout=1500))
+            except Exception:  # noqa: BLE001
+                continue
+            if claves and all(k in txt for k in claves):
+                exacta = op
+                break
+            if claves and claves[0] in txt and solo_ciudad is None:
+                solo_ciudad = op
+        elegida = exacta
+        if elegida is None and len(claves) <= 1:
+            elegida = solo_ciudad  # solo ciudad -> aceptamos la 1a coincidencia
+        if elegida is not None:
+            try:
+                await elegida.click(timeout=4000)
+                if exacta is None:
+                    logger.warning(
+                        f"[{etq}] Lugar de expedicion AMBIGUO ('{valor}'): sin "
+                        "departamento; se tomo la primera opcion. Usa 'CIUDAD (DEPTO)'."
+                    )
+                else:
+                    logger.info(f"[{etq}] Lugar de expedicion elegido: {valor}")
+                return True
+            except ERRORES_PW:
+                pass
+
+    logger.warning(
+        f"[{etq}] No se pudo elegir '{valor}' del autocompletar de lugar de "
+        "expedicion (¿cambió la lista o el texto no coincide?); se deja el texto tecleado."
+    )
+    return False
+
+
 async def _captura_fallo(page, etiqueta: str, motivo: str = "") -> str:
     """
     Guarda un pantallazo del estado actual en CARPETA_CAPTURAS cuando un registro
@@ -573,8 +658,10 @@ async def registrar_cuenta(
         await _seleccionar_opcion(page, 'select[formcontrolname="expeditionMonth"]', _norm_mes(datos.get("ExpedicionMM"), "06"), etq)
         await _seleccionar_opcion(page, 'select[formcontrolname="expeditionYear"]', _norm_anio(datos.get("ExpedicionYYYY"), "1995"), etq)
 
-        # Lugar de expedición: input[formcontrolname="expeditionPlace"].
-        await human_type(page, 'input[formcontrolname="expeditionPlace"]', datos.get("LugarExpedicion", "BOGOTA"))
+        # Lugar de expedición: AUTOCOMPLETAR (hay ciudades homónimas, p. ej.
+        # ARMENIA en Quindío/Antioquia). Escribe la ciudad y hace clic en la opción
+        # que coincida con el departamento indicado en LugarExpedicion.
+        await _elegir_lugar_expedicion(page, datos.get("LugarExpedicion", "BOGOTA"), etq)
 
         # Fecha de nacimiento: tres <select> (mismo formato que expedición:
         # día '1'..'31', mes '01'..'12', año '1908'..'2008').

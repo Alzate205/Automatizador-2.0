@@ -2,7 +2,10 @@
 import pandas as pd
 
 import preflight
-from procesador_web import _partir_dos, _validar_datos_registro
+from procesador_web import (
+    _partir_dos, _validar_datos_registro,
+    _ciudad_lugar_expedicion, _claves_lugar_expedicion,
+)
 
 
 # ---------------- _partir_dos (segundo nombre/apellido) ----------------
@@ -26,6 +29,21 @@ def test_partir_dos_tres_palabras_toma_la_ultima():
 def test_partir_dos_vacios():
     assert _partir_dos("", "") == ("", "")
     assert _partir_dos(None, None) == ("", "")
+
+
+# ---------------- Lugar de expedición (autocompletar homónimos) ----------------
+
+def test_ciudad_lugar_expedicion_separa_departamento():
+    assert _ciudad_lugar_expedicion("ARMENIA (QUINDIO)") == "ARMENIA"
+    assert _ciudad_lugar_expedicion("ARMENIA, QUINDIO") == "ARMENIA"
+    assert _ciudad_lugar_expedicion("BOGOTA") == "BOGOTA"
+    assert _ciudad_lugar_expedicion("") == "BOGOTA"  # defecto
+
+
+def test_claves_lugar_expedicion():
+    assert _claves_lugar_expedicion("ARMENIA (QUINDIO)") == ["armenia", "quindio"]
+    assert _claves_lugar_expedicion("ARMENIA (ANTIOQUIA)") == ["armenia", "antioquia"]
+    assert _claves_lugar_expedicion("Bogotá") == ["bogota"]  # sin tildes
 
 
 # ---------------- _validar_datos_registro (incluye Telefono) ----------------
