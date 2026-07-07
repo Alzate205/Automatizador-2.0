@@ -111,7 +111,9 @@ def api_cuentas_get():
 @app.post("/api/cuentas")
 async def api_cuentas_post(request: Request):
     body = await request.json()
-    n = datos.guardar_cuentas(body.get("filas", []))
+    # auto=True (autoguardado al salir de una casilla) no genera respaldo.
+    respaldar = not bool(body.get("auto", False))
+    n = datos.guardar_cuentas(body.get("filas", []), respaldar=respaldar)
     return {"ok": True, "guardadas": n}
 
 

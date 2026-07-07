@@ -71,6 +71,22 @@ def test_guardar_hace_backup_atomico(tmp_path, monkeypatch):
     assert not list(tmp_path.glob(".tmp_*"))
 
 
+def test_autoguardado_no_respalda(tmp_path, monkeypatch):
+    ruta = tmp_path / "cuentas.xlsx"
+    monkeypatch.setattr(datos, "RUTA_EXCEL", str(ruta))
+    datos.guardar_cuentas([{"Usuario": "a@b.com"}])                    # crea el archivo
+    datos.guardar_cuentas([{"Usuario": "b@c.com"}], respaldar=False)   # autosave: sin backup
+    carpeta_bk = tmp_path / datos.CARPETA_BACKUPS
+    assert not carpeta_bk.exists() or not list(carpeta_bk.glob("cuentas_*.xlsx"))
+    # Sí escribió el cambio.
+    assert datos.cuentas_como_dict()["filas"][0]["Usuario"] == "b@c.com"
+
+
+def test_plantilla_incluye_segundo_nombre_apellido():
+    df = datos.generar_plantilla_registro(1)
+    assert "SegundoNombre" in df.columns and "SegundoApellido" in df.columns
+
+
 def test_anexar_cuenta(tmp_path, monkeypatch):
     ruta = tmp_path / "cuentas.xlsx"
     monkeypatch.setattr(datos, "RUTA_EXCEL", str(ruta))

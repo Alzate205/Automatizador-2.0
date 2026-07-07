@@ -62,6 +62,16 @@ def test_cuentas_get_post(tmp_path, monkeypatch):
     assert g.json()["filas"][0]["Usuario"] == "a@b.com"
 
 
+def test_cuentas_autoguardado_sin_backup(tmp_path, monkeypatch):
+    c = _client(tmp_path, monkeypatch)
+    c.post("/api/cuentas", json={"filas": [{"Usuario": "a@b.com"}]})
+    r = c.post("/api/cuentas", json={"filas": [{"Usuario": "b@c.com"}], "auto": True})
+    assert r.status_code == 200
+    bk = tmp_path / "backups_cuentas"
+    assert not bk.exists() or not list(bk.glob("cuentas_*.xlsx"))
+    assert c.get("/api/cuentas").json()["filas"][0]["Usuario"] == "b@c.com"
+
+
 def test_cuentas_plantilla(tmp_path, monkeypatch):
     c = _client(tmp_path, monkeypatch)
     r = c.post("/api/cuentas/plantilla", json={"n": 4})

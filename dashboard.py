@@ -50,7 +50,8 @@ COLUMNAS_SENSIBLES = ["Password", "ClaveCorreo"]
 # registro (fechas y lugar de expedicion) que usan tab_registrar y el registro masivo.
 COLUMNAS_PLANTILLA = [
     "Usuario", "Password", "Nombre", "Correo", "ClaveCorreo", "Puerto", "Modo",
-    "Cedula", "PrimerNombre", "PrimerApellido", "Telefono",
+    "Cedula", "PrimerNombre", "SegundoNombre", "PrimerApellido", "SegundoApellido",
+    "Telefono",
     "ExpedicionDD", "ExpedicionMM", "ExpedicionYYYY",
     "NacimientoDD", "NacimientoMM", "NacimientoYYYY",
     "LugarExpedicion",
@@ -90,7 +91,9 @@ def generar_plantilla_registro(n: int = 10) -> pd.DataFrame:
             "Modo": "registro",
             "Cedula": "",
             "PrimerNombre": "",
+            "SegundoNombre": "",
             "PrimerApellido": "",
+            "SegundoApellido": "",
             "Telefono": "",
             "ExpedicionDD": "15", "ExpedicionMM": "06", "ExpedicionYYYY": "1995",
             "NacimientoDD": "10", "NacimientoMM": "03", "NacimientoYYYY": "1995",

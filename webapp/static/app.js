@@ -3,7 +3,8 @@ const $ = (s) => document.querySelector(s);
 const COLUMNAS_SENSIBLES = ['Password', 'ClaveCorreo'];
 const COLUMNAS_BASE = [
   'Usuario', 'Password', 'Nombre', 'Correo', 'ClaveCorreo', 'Puerto', 'Modo',
-  'Cedula', 'PrimerNombre', 'PrimerApellido', 'Telefono',
+  'Cedula', 'PrimerNombre', 'SegundoNombre', 'PrimerApellido', 'SegundoApellido',
+  'Telefono',
   'ExpedicionDD', 'ExpedicionMM', 'ExpedicionYYYY',
   'NacimientoDD', 'NacimientoMM', 'NacimientoYYYY', 'LugarExpedicion',
 ];
@@ -187,14 +188,38 @@ function pintarTabla(filas) {
   $('#tabla-cuentas').innerHTML = html;
 
   $('#tabla-cuentas').querySelectorAll('.btn-borrar').forEach(btn => {
-    btn.onclick = () => { btn.closest('tr').remove(); };
+    btn.onclick = () => { btn.closest('tr').remove(); autoguardarCuentas(); };
+  });
+  // Autoguardado: al salir de una casilla (change = blur con cambio) se guarda
+  // solo, por si se recarga la página. No genera respaldo (auto=true).
+  $('#tabla-cuentas').querySelectorAll('[data-col]').forEach(inp => {
+    inp.addEventListener('change', autoguardarCuentas);
   });
 }
 
 async function cargarCuentas() {
   const d = await (await fetch('/api/cuentas')).json();
-  _colsCuentas = (d.columnas && d.columnas.length) ? d.columnas : COLUMNAS_BASE.slice();
+  _colsCuentas = (d.columnas && d.columnas.length) ? d.columnas.slice() : COLUMNAS_BASE.slice();
+  // Garantiza que las columnas de la plantilla (incl. SegundoNombre/SegundoApellido)
+  // aparezcan aunque el archivo sea viejo y no las traiga.
+  for (const c of COLUMNAS_BASE) if (!_colsCuentas.includes(c)) _colsCuentas.push(c);
   pintarTabla(d.filas || []);
+}
+
+let _autosaveTimer = null;
+function autoguardarCuentas() {
+  clearTimeout(_autosaveTimer);
+  _autosaveTimer = setTimeout(async () => {
+    try {
+      await post('/api/cuentas', { filas: recogerFilasCuentas(), auto: true });
+      $('#estado-cuentas').textContent = 'Guardado automático ✓';
+      setTimeout(() => {
+        if ($('#estado-cuentas').textContent === 'Guardado automático ✓')
+          $('#estado-cuentas').textContent = '';
+      }, 2000);
+      actualizarContador();
+    } catch (e) { /* reintenta en el próximo cambio */ }
+  }, 400);
 }
 
 function recogerFilasCuentas() {

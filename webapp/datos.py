@@ -27,7 +27,8 @@ COLUMNAS_SENSIBLES = ["Password", "ClaveCorreo"]
 
 COLUMNAS_PLANTILLA = [
     "Usuario", "Password", "Nombre", "Correo", "ClaveCorreo", "Puerto", "Modo",
-    "Cedula", "PrimerNombre", "PrimerApellido", "Telefono",
+    "Cedula", "PrimerNombre", "SegundoNombre", "PrimerApellido", "SegundoApellido",
+    "Telefono",
     "ExpedicionDD", "ExpedicionMM", "ExpedicionYYYY",
     "NacimientoDD", "NacimientoMM", "NacimientoYYYY",
     "LugarExpedicion",
@@ -49,7 +50,8 @@ def generar_plantilla_registro(n: int = 10) -> pd.DataFrame:
         df.loc[i] = {
             "Usuario": "", "Password": "", "Nombre": f"Cuenta {i + 1}",
             "Correo": "", "ClaveCorreo": "", "Puerto": 9222 + i, "Modo": "registro",
-            "Cedula": "", "PrimerNombre": "", "PrimerApellido": "", "Telefono": "",
+            "Cedula": "", "PrimerNombre": "", "SegundoNombre": "",
+            "PrimerApellido": "", "SegundoApellido": "", "Telefono": "",
             "ExpedicionDD": "15", "ExpedicionMM": "06", "ExpedicionYYYY": "1995",
             "NacimientoDD": "10", "NacimientoMM": "03", "NacimientoYYYY": "1995",
             "LugarExpedicion": "BOGOTA",
@@ -158,13 +160,16 @@ def _respaldar(ruta: str) -> str:
         return ""
 
 
-def guardar_excel_seguro(df: pd.DataFrame, ruta: str = RUTA_EXCEL) -> int:
-    """Respalda el archivo previo y lo escribe de forma ATÓMICA (.tmp + replace).
+def guardar_excel_seguro(df: pd.DataFrame, ruta: str = RUTA_EXCEL, respaldar: bool = True) -> int:
+    """Escribe el Excel de forma ATÓMICA (.tmp + replace); respalda si se pide.
 
-    Así un fallo a mitad de escritura no deja el archivo corrupto, y siempre queda
-    una copia con fecha en backups_cuentas/ por si hay que recuperar.
+    La escritura atómica evita dejar el archivo corrupto si algo falla a mitad.
+    `respaldar=True` guarda además una copia con fecha en backups_cuentas/. El
+    autoguardado (frecuente) usa respaldar=False para no llenar la carpeta; el
+    guardado manual y las acciones destructivas usan respaldar=True.
     """
-    _respaldar(ruta)
+    if respaldar:
+        _respaldar(ruta)
     # El temporal conserva la extensión .xlsx (openpyxl rechaza otras como .tmp).
     tmp = os.path.join(os.path.dirname(ruta) or ".", f".tmp_{os.path.basename(ruta)}")
     with pd.ExcelWriter(tmp, engine="openpyxl") as writer:
@@ -173,8 +178,8 @@ def guardar_excel_seguro(df: pd.DataFrame, ruta: str = RUTA_EXCEL) -> int:
     return len(df)
 
 
-def guardar_cuentas(filas: list) -> int:
-    return guardar_excel_seguro(pd.DataFrame(filas), RUTA_EXCEL)
+def guardar_cuentas(filas: list, respaldar: bool = True) -> int:
+    return guardar_excel_seguro(pd.DataFrame(filas), RUTA_EXCEL, respaldar=respaldar)
 
 
 def anexar_cuenta(fila: dict) -> int:
