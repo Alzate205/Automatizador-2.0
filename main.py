@@ -49,7 +49,7 @@ from auditor import (
 from conexion_cdp import construir_endpoint
 from lector_correos import esperar_y_extraer_codigo
 from pausa import pausa_humana
-from preflight import validar_datos
+from preflight import validar_datos, REQUERIDOS_REGISTRO
 from procesador_web import process_user
 from rotador_ip import rotar_ip_seguro
 
@@ -266,6 +266,29 @@ async def procesar_fila(row, perfil_id: int, tareas: set, apuesta_cfg: dict) -> 
     # 2FA por IMAP, que es independiente de con qué se inicia sesión.)
     cedula = str(row.get("Cedula", "") or "").strip()
     usuario_login = cedula or str(email)
+
+    # Guarda temprana: una fila de REGISTRO sin los campos obligatorios se descarta
+    # ANTES de rotar IP o abrir Chrome (no gasta un intento). Se marca como fallo.
+    if modo == "registro":
+        faltan = [
+            c for c in REQUERIDOS_REGISTRO
+            if str(row.get(c, "") or "").strip().lower() in ("", "nan", "none")
+        ]
+        if faltan:
+            msg = "Faltan campos obligatorios de registro: " + ", ".join(faltan)
+            log.error(f"[{etiqueta}] Registro OMITIDO (sin abrir navegador): {msg}")
+            registrar_historial(
+                usuario=str(email),
+                estado="registro_rechazado",
+                detalle=f"Modo: registro | {msg}",
+                saldo=0.0, verificada="no", limitada=False,
+            )
+            return {
+                "saldo": 0.0, "verificada": "no", "limitada": False,
+                "bono": "desconocido", "apuesta_bono": "n/a", "apuesta_saldo": "n/a",
+                "registro": "registro_rechazado", "estado": "registro_rechazado",
+                "mensaje": msg, "timestamp": datetime.now().isoformat(),
+            }
 
     # Rotacion de IP movil ANTES de tocar el navegador (login o registro). Bloqueante,
     # asi que va en un hilo para no bloquear el event loop. Defensiva: nunca lanza.

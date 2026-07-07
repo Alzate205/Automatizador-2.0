@@ -18,7 +18,7 @@ import os
 import pandas as pd
 
 # Campos obligatorios para poder intentar un registro en Betplay.
-REQUERIDOS_REGISTRO = ("Cedula", "PrimerNombre", "Correo", "Password")
+REQUERIDOS_REGISTRO = ("Cedula", "PrimerNombre", "PrimerApellido", "Correo", "Telefono", "Password")
 # Identificadores válidos para un login (basta uno).
 IDENTIFICADORES_LOGIN = ("Cedula", "Correo", "Usuario")
 

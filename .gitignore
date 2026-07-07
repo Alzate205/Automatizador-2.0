@@ -4,12 +4,16 @@ perfiles/
 # Runtime del bot / dashboard (se regeneran en cada corrida)
 estado_bot.json
 config_run.json
+codigo_2fa.txt
 *.flag
 bot.log
 bot_consola.log
 progreso.txt
 cuentas_actualizadas.xlsx
 historial_auditoria.csv
+
+# Capturas de pantalla de registros fallidos (se generan en cada corrida)
+capturas/
 
 # Proxies (puede contener credenciales user:pass@ip:port; no versionar)
 proxies.txt
