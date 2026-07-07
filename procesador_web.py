@@ -176,30 +176,64 @@ async def human_delay(min_sec: float = 0.8, max_sec: float = 3.0) -> None:
     await pausa_con_jitter(min_sec, jitter_ms=jitter_ms)
 
 
-async def human_type(page, selector, text, delay_range=(90, 240)) -> bool:
+async def _esperar_listo(page, selector, timeout_ms: int = 15000):
+    """
+    Espera a que un campo esté VISIBLE y HABILITADO y devuelve su Locator (o None).
+
+    El formulario de Betplay es PASO A PASO: un campo no se habilita hasta que el
+    anterior quedó bien lleno. Por eso, antes de tocar cada campo, esperamos a que
+    esté realmente disponible (no solo presente en el DOM). `selector` puede ser un
+    string CSS o un Locator ya acotado.
+    """
+    loc = (page.locator(selector) if isinstance(selector, str) else selector).first
+    try:
+        await loc.wait_for(state="visible", timeout=timeout_ms)
+    except ERRORES_PW:
+        return None
+    for _ in range(max(1, int(timeout_ms / 300))):
+        try:
+            if await loc.is_enabled():
+                return loc
+        except ERRORES_PW:
+            pass
+        await asyncio.sleep(0.3)
+    return None  # visible pero nunca se habilitó (paso anterior incompleto)
+
+
+async def human_type(page, selector, text, delay_range=(90, 240), reintentos: int = 2) -> bool:
     """
     Escribe el texto carácter a carácter con variabilidad humana (lento, para no
-    parecer un bot). `selector` puede ser un string CSS o un Locator ya acotado.
+    parecer un bot). Espera a que el campo esté HABILITADO (form paso a paso) y
+    reintenta. `selector` puede ser un string CSS o un Locator ya acotado.
 
-    Devuelve True si pudo escribir, False si el selector no estaba disponible.
+    Devuelve True si escribió, False si el campo no estuvo disponible.
     """
-    try:
-        loc = page.locator(selector) if isinstance(selector, str) else selector
-        loc = loc.first
-        await loc.scroll_into_view_if_needed(timeout=3000)
-        await loc.click()
-        await human_delay(0.4, 1.0)
-        # str(text): tolera valores numéricos (p. ej. Cédula/Teléfono leídos del
-        # Excel como int) sin romper el tecleo carácter a carácter.
-        for char in str(text):
-            await page.keyboard.type(char, delay=random.randint(*delay_range))
-            if random.random() < 0.15:
-                await human_delay(0.25, 0.7)  # micro-pausas de "pensar"
-        await human_delay(0.5, 1.3)  # pausa al terminar el campo (más humano)
-        return True
-    except ERRORES_PW:
-        logger.warning(f"No se pudo escribir en: {selector}")
-        return False
+    for intento in range(1, reintentos + 1):
+        loc = await _esperar_listo(page, selector)
+        if loc is None:
+            if intento < reintentos:
+                await human_delay(0.8, 1.6)
+                continue
+            logger.warning(f"Campo no disponible para escribir: {selector}")
+            return False
+        try:
+            await loc.scroll_into_view_if_needed(timeout=3000)
+            await loc.click()
+            await human_delay(0.4, 1.0)
+            # str(text): tolera valores numéricos (Cédula/Teléfono leídos como int).
+            for char in str(text):
+                await page.keyboard.type(char, delay=random.randint(*delay_range))
+                if random.random() < 0.15:
+                    await human_delay(0.25, 0.7)  # micro-pausas de "pensar"
+            await human_delay(0.5, 1.3)  # pausa al terminar el campo (más humano)
+            return True
+        except ERRORES_PW:
+            if intento < reintentos:
+                await human_delay(0.8, 1.6)
+                continue
+            logger.warning(f"No se pudo escribir en: {selector}")
+            return False
+    return False
 
 
 async def human_mouse_move(page, steps: int = 8):
@@ -393,57 +427,71 @@ async def _seleccionar_opcion(page, selector: str, valor: str, etiqueta: str = "
         return False
     valor = str(valor).strip()
     textos = [str(t) for t in (textos or []) if str(t).strip()]
-    try:
-        ctrl = page.locator(selector).first
-        await ctrl.wait_for(state="visible", timeout=8000)
-        await ctrl.scroll_into_view_if_needed(timeout=3000)
-    except ERRORES_PW:
-        logger.warning(f"[{etiqueta}] Desplegable no visible: {selector}")
-        return False
+    objetivos = [valor] + textos
 
-    # 1) <select> NATIVO: por value y por cada etiqueta.
-    for intento in [{"value": valor}] + [{"label": t} for t in textos]:
+    # El form es PASO A PASO: esperamos a que el desplegable esté HABILITADO. Si no
+    # se habilita, es que un campo anterior no quedó bien lleno; reintentamos poco.
+    for intento in range(1, 3):
+        ctrl = await _esperar_listo(page, selector)
+        if ctrl is None:
+            if intento < 2:
+                await human_delay(0.8, 1.6)
+                continue
+            logger.warning(f"[{etiqueta}] Desplegable no disponible/habilitado: {selector}")
+            return False
         try:
-            await page.select_option(selector, **intento)
-            await human_delay(0.6, 1.4)
-            return True
-        except Exception:  # noqa: BLE001  (no es <select> nativo o el value no existe)
+            await ctrl.scroll_into_view_if_needed(timeout=3000)
+        except ERRORES_PW:
             pass
 
-    # 2) PERSONALIZADO: abrir el control y hacer clic en la opción.
-    try:
-        await ctrl.click()
-        await human_delay(0.5, 1.2)
-    except ERRORES_PW:
-        pass
-
-    objetivos = [valor] + textos
-    contenedores = [
-        page.get_by_role("option"),
-        page.locator("mat-option, [role='option'], .mat-option, .p-dropdown-item, "
-                     "ng-dropdown-panel .ng-option, .ng-option, ul.dropdown-menu li, "
-                     "li[role='option'], .select2-results__option, option"),
-    ]
-    for loc in contenedores:
-        try:
-            n = await loc.count()
-        except Exception:  # noqa: BLE001
-            continue
-        for i in range(min(n, 80)):
-            op = loc.nth(i)
+        # 1) <select> NATIVO: por value y por cada etiqueta.
+        for kw in [{"value": valor}] + [{"label": t} for t in textos]:
             try:
-                if not await op.is_visible():
-                    continue
-                txt = await op.inner_text(timeout=800)
+                await page.select_option(selector, **kw)
+                await human_delay(0.6, 1.4)
+                return True
+            except Exception:  # noqa: BLE001  (no es <select> nativo o value inexistente)
+                pass
+
+        # 2) PERSONALIZADO: abrir el control y hacer clic en la opción.
+        try:
+            await ctrl.click()
+            await human_delay(0.5, 1.2)
+        except ERRORES_PW:
+            pass
+        contenedores = [
+            page.get_by_role("option"),
+            page.locator("mat-option, [role='option'], .mat-option, .p-dropdown-item, "
+                         "ng-dropdown-panel .ng-option, .ng-option, ul.dropdown-menu li, "
+                         "li[role='option'], .select2-results__option, option"),
+        ]
+        for loc in contenedores:
+            try:
+                n = await loc.count()
             except Exception:  # noqa: BLE001
                 continue
-            if _coincide_opcion(txt, objetivos):
+            for i in range(min(n, 80)):
+                op = loc.nth(i)
                 try:
-                    await op.click(timeout=3000)
-                    await human_delay(0.5, 1.2)
-                    return True
-                except ERRORES_PW:
+                    if not await op.is_visible():
+                        continue
+                    txt = await op.inner_text(timeout=800)
+                except Exception:  # noqa: BLE001
                     continue
+                if _coincide_opcion(txt, objetivos):
+                    try:
+                        await op.click(timeout=3000)
+                        await human_delay(0.5, 1.2)
+                        return True
+                    except ERRORES_PW:
+                        continue
+        # No se encontró la opción en este intento; cerramos y reintentamos.
+        if intento < 2:
+            try:
+                await page.keyboard.press("Escape")
+            except ERRORES_PW:
+                pass
+            await human_delay(0.6, 1.2)
 
     logger.warning(f"[{etiqueta}] No se pudo seleccionar '{textos or valor}' en {selector}")
     return False
@@ -769,6 +817,19 @@ async def _esperar_resultado_registro(page, timeout_ms: int = TIMEOUT_RESULTADO_
     return "timeout"
 
 
+async def _abortar_paso(page, etq: str, paso: str) -> Dict[str, Any]:
+    """Detiene el registro cuando un PASO obligatorio no se completó.
+
+    Como el formulario es paso a paso, seguir es inútil (el siguiente campo no se
+    habilita). Guarda captura y devuelve el resultado de error indicando el paso.
+    """
+    await _captura_fallo(page, etq, f"paso no completado: {paso}")
+    msg = (f"Paso '{paso}' no se pudo completar. El formulario es paso a paso: si un "
+           "campo no queda bien lleno, el siguiente no se habilita.")
+    logger.error(f"[{etq}] {msg}")
+    return {"ok": False, "estado": "error_registro", "mensaje": msg}
+
+
 async def registrar_cuenta(
     page,
     datos: Dict[str, Any],
@@ -813,85 +874,102 @@ async def registrar_cuenta(
                     "mensaje": "No se pudo hacer clic en 'Registrarse' (boton no visible)"}
         await human_delay(3, 5)
 
-        # Tipo de documento: SIEMPRE se selecciona (aunque el valor por defecto ya
-        # sea Cédula), porque Angular necesita el evento de selección para validar.
+        # A partir de aquí, cada campo es un PASO: si uno falla, el siguiente no se
+        # habilita, así que nos detenemos ahí con un mensaje claro (no seguimos a lo
+        # loco). Los pasos opcionales (segundo nombre/apellido) no detienen.
+
+        # 1) Tipo de documento (SIEMPRE se selecciona, aunque sea el default).
         val_doc = _valor_tipo_doc(datos)
-        await _seleccionar_opcion(
+        if not await _seleccionar_opcion(
             page, 'select[formcontrolname="documentType"]', val_doc, etq,
             textos=[DOC_TIPO_LABEL.get(val_doc, "Cedula de ciudadania"),
                     str(datos.get("TipoDocumento", ""))],
-        )
+        ):
+            return await _abortar_paso(page, etq, "Tipo de documento")
         await human_delay(1, 2)
 
-        # Número de identificación (cédula) -> es el usuario de la cuenta Betplay.
-        await human_type(page, 'input[formcontrolname="documentNumber"]', datos.get("Cedula", ""))
+        # 2) Número de identificación (cédula).
+        if not await human_type(page, 'input[formcontrolname="documentNumber"]', datos.get("Cedula", "")):
+            return await _abortar_paso(page, etq, "Número de identificación (cédula)")
 
-        # Fecha de expedición: tres desplegables. value = número; texto también
-        # (día/año) o el nombre del mes (por si el desplegable muestra 'Junio').
+        # 3) Fecha de expedición (día / mes / año).
         exp_dd = _norm_dia(datos.get("ExpedicionDD"), "15")
         exp_mm = _norm_mes(datos.get("ExpedicionMM"), "06")
         exp_yy = _norm_anio(datos.get("ExpedicionYYYY"), "1995")
-        await _seleccionar_opcion(page, 'select[formcontrolname="expeditionDay"]', exp_dd, etq, textos=[exp_dd])
-        await _seleccionar_opcion(page, 'select[formcontrolname="expeditionMonth"]', exp_mm, etq,
-                                  textos=[exp_mm, str(int(exp_mm)), MESES_NOMBRE.get(exp_mm, "")])
-        await _seleccionar_opcion(page, 'select[formcontrolname="expeditionYear"]', exp_yy, etq, textos=[exp_yy])
+        if not await _seleccionar_opcion(page, 'select[formcontrolname="expeditionDay"]', exp_dd, etq, textos=[exp_dd]):
+            return await _abortar_paso(page, etq, "Fecha de expedición (día)")
+        if not await _seleccionar_opcion(page, 'select[formcontrolname="expeditionMonth"]', exp_mm, etq,
+                                         textos=[exp_mm, str(int(exp_mm)), MESES_NOMBRE.get(exp_mm, "")]):
+            return await _abortar_paso(page, etq, "Fecha de expedición (mes)")
+        if not await _seleccionar_opcion(page, 'select[formcontrolname="expeditionYear"]', exp_yy, etq, textos=[exp_yy]):
+            return await _abortar_paso(page, etq, "Fecha de expedición (año)")
 
-        # Lugar de expedición: AUTOCOMPLETAR (hay ciudades homónimas, p. ej.
-        # ARMENIA en Quindío/Antioquia). Escribe la ciudad y hace clic en la opción
-        # que coincida con el departamento indicado en LugarExpedicion.
-        await _elegir_lugar_expedicion(page, datos.get("LugarExpedicion", "BOGOTA"), etq)
+        # 4) Lugar de expedición (autocompletar de homónimos).
+        if not await _elegir_lugar_expedicion(page, datos.get("LugarExpedicion", "BOGOTA"), etq):
+            return await _abortar_paso(page, etq, "Lugar de expedición")
 
-        # Fecha de nacimiento: mismo formato que expedición.
+        # 5) Fecha de nacimiento (día / mes / año).
         nac_dd = _norm_dia(datos.get("NacimientoDD"), "10")
         nac_mm = _norm_mes(datos.get("NacimientoMM"), "03")
         nac_yy = _norm_anio(datos.get("NacimientoYYYY"), "1995")
-        await _seleccionar_opcion(page, 'select[formcontrolname="bornDay"]', nac_dd, etq, textos=[nac_dd])
-        await _seleccionar_opcion(page, 'select[formcontrolname="bornMonth"]', nac_mm, etq,
-                                  textos=[nac_mm, str(int(nac_mm)), MESES_NOMBRE.get(nac_mm, "")])
-        await _seleccionar_opcion(page, 'select[formcontrolname="bornYear"]', nac_yy, etq, textos=[nac_yy])
+        if not await _seleccionar_opcion(page, 'select[formcontrolname="bornDay"]', nac_dd, etq, textos=[nac_dd]):
+            return await _abortar_paso(page, etq, "Fecha de nacimiento (día)")
+        if not await _seleccionar_opcion(page, 'select[formcontrolname="bornMonth"]', nac_mm, etq,
+                                         textos=[nac_mm, str(int(nac_mm)), MESES_NOMBRE.get(nac_mm, "")]):
+            return await _abortar_paso(page, etq, "Fecha de nacimiento (mes)")
+        if not await _seleccionar_opcion(page, 'select[formcontrolname="bornYear"]', nac_yy, etq, textos=[nac_yy]):
+            return await _abortar_paso(page, etq, "Fecha de nacimiento (año)")
 
-        # Nombres: primer nombre (firstName) + segundo nombre (firstName2). Si no
-        # viene SegundoNombre y PrimerNombre trae dos palabras, se parte solo.
+        # 6) Nombres (segundo nombre es OPCIONAL, no detiene).
         primer_nombre, segundo_nombre = _partir_dos(
             datos.get("PrimerNombre", ""), datos.get("SegundoNombre", ""))
-        await human_type(page, 'input[formcontrolname="firstName"]', primer_nombre)
+        if not await human_type(page, 'input[formcontrolname="firstName"]', primer_nombre):
+            return await _abortar_paso(page, etq, "Primer nombre")
         if segundo_nombre:
             await human_type(page, 'input[formcontrolname="firstName2"]', segundo_nombre)
 
-        # Apellidos: primer apellido (lastName) + segundo apellido (lastName2). Si no
-        # viene SegundoApellido y PrimerApellido trae dos palabras, se parte solo
-        # ("Perez Gomez" -> Perez / Gomez).
+        # 7) Apellidos (segundo apellido OPCIONAL).
         primer_apellido, segundo_apellido = _partir_dos(
             datos.get("PrimerApellido", ""), datos.get("SegundoApellido", ""))
-        await human_type(page, 'input[formcontrolname="lastName"]', primer_apellido)
+        if not await human_type(page, 'input[formcontrolname="lastName"]', primer_apellido):
+            return await _abortar_paso(page, etq, "Primer apellido")
         if segundo_apellido:
             await human_type(page, 'input[formcontrolname="lastName2"]', segundo_apellido)
 
-        # Nacionalidad: SIEMPRE se selecciona (aunque muestre COLOMBIA por defecto).
-        await _seleccionar_opcion(
+        # 8) Nacionalidad (SIEMPRE, aunque muestre COLOMBIA por defecto).
+        if not await _seleccionar_opcion(
             page,
             'select[formcontrolname="nationality"], select[formcontrolname="nacionality"], '
             'select[formcontrolname="country"], select[formcontrolname="pais"]',
             "COLOMBIA", etq, textos=["COLOMBIA", "Colombia"],
-        )
+        ):
+            return await _abortar_paso(page, etq, "Nacionalidad")
 
-        # Género: 1=Masculino, 2=Femenino.
+        # 9) Género.
         val_gen = _valor_genero(datos)
-        await _seleccionar_opcion(page, 'select[formcontrolname="gender"]', val_gen, etq,
-                                  textos=[GENERO_LABEL.get(val_gen, ""), str(datos.get("Genero", ""))])
+        if not await _seleccionar_opcion(page, 'select[formcontrolname="gender"]', val_gen, etq,
+                                         textos=[GENERO_LABEL.get(val_gen, ""), str(datos.get("Genero", ""))]):
+            return await _abortar_paso(page, etq, "Género")
 
-        # Contacto: teléfono (mobilePhoneNumber, 10 díg.) + correo (email).
-        await human_type(page, 'input[formcontrolname="mobilePhoneNumber"]', datos.get("Telefono", ""))
-        await human_type(page, 'input[formcontrolname="email"]', datos.get("Correo", ""))
+        # 10) Contacto: teléfono + correo.
+        if not await human_type(page, 'input[formcontrolname="mobilePhoneNumber"]', datos.get("Telefono", "")):
+            return await _abortar_paso(page, etq, "Teléfono móvil")
+        if not await human_type(page, 'input[formcontrolname="email"]', datos.get("Correo", "")):
+            return await _abortar_paso(page, etq, "Correo electrónico")
 
-        # Dirección: tipo de vía (desplegable) + tres campos + ciudad.
+        # 11) Dirección: tipo de vía + tres campos + municipio.
         val_via = _valor_tipo_via(datos)
-        await _seleccionar_opcion(page, 'select[formcontrolname="addressType"]', val_via, etq,
-                                  textos=[str(datos.get("TipoVia", "")), _label_tipo_via(val_via)])
-        await human_type(page, 'input[formcontrolname="address1"]', datos.get("Direccion1", "26D"))
-        await human_type(page, 'input[formcontrolname="address2"]', datos.get("Direccion2", "57D"))
-        await human_type(page, 'input[formcontrolname="address3"]', datos.get("Direccion3", "87"))
-        await human_type(page, 'input[formcontrolname="cityAddress"]', datos.get("Ciudad", "BOGOTA"))
+        if not await _seleccionar_opcion(page, 'select[formcontrolname="addressType"]', val_via, etq,
+                                         textos=[str(datos.get("TipoVia", "")), _label_tipo_via(val_via)]):
+            return await _abortar_paso(page, etq, "Dirección (tipo de vía)")
+        if not await human_type(page, 'input[formcontrolname="address1"]', datos.get("Direccion1", "26D")):
+            return await _abortar_paso(page, etq, "Dirección (parte 1)")
+        if not await human_type(page, 'input[formcontrolname="address2"]', datos.get("Direccion2", "57D")):
+            return await _abortar_paso(page, etq, "Dirección (parte 2)")
+        if not await human_type(page, 'input[formcontrolname="address3"]', datos.get("Direccion3", "87")):
+            return await _abortar_paso(page, etq, "Dirección (parte 3)")
+        if not await human_type(page, 'input[formcontrolname="cityAddress"]', datos.get("Ciudad", "BOGOTA")):
+            return await _abortar_paso(page, etq, "Municipio")
 
         # Contraseña + confirmación. OJO: hay DOS campos 'password' en la página (el
         # login del header y el del registro); acotamos al FORMULARIO DE REGISTRO
