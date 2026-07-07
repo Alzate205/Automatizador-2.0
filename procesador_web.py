@@ -666,6 +666,17 @@ async def registrar_cuenta(
         # ninguna dentro del timeout, se marca como fallo (no como "incierto").
         senal = await _esperar_resultado_registro(page)
 
+        # DIAGNÓSTICO: registra en bot.log la URL y el texto REAL que muestra
+        # Betplay al decidir. Sirve para afinar INDICADORES_REGISTRO_OK/ERROR con
+        # las palabras exactas del sitio (revisar estas líneas tras una corrida).
+        try:
+            _diag = (await page.locator("body").inner_text(timeout=4000)).strip()
+            _diag = re.sub(r"\s+", " ", _diag)
+        except ERRORES_PW:
+            _diag = ""
+        logger.info(f"[DIAG registro] senal={senal} | url={page.url}")
+        logger.info(f"[DIAG registro] texto en pantalla (primeros 500): {_diag[:500]!r}")
+
         if senal == "error":
             await _captura_fallo(page, etq, "indicador de error tras enviar")
             logger.warning("Registro RECHAZADO: indicador de error detectado en la pagina.")
