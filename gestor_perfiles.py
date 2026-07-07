@@ -67,8 +67,45 @@ def proxy_valido(proxy: Optional[str]) -> Optional[str]:
     return limpio
 
 
+def construir_args_chrome(
+    chrome_exe: str,
+    puerto: int,
+    user_dir: str,
+    proxy: Optional[str] = None,
+    headless: bool = False,
+) -> list:
+    """
+    Arma la lista de argumentos para lanzar Chrome.
+
+    NO usa --no-sandbox ni --disable-setuid-sandbox: esos flags hacen que Chrome
+    muestre el banner "marca de línea de comandos no admitida", bajan la seguridad
+    y NO ayudan a evadir detección (las webs no ven esos flags). El segundo,
+    además, es solo de Linux y en Windows no hace nada.
+    """
+    cmd = [
+        chrome_exe,
+        f"--remote-debugging-port={puerto}",
+        f"--user-data-dir={user_dir}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-blink-features=AutomationControlled",
+        "--disable-extensions",
+        "--lang=es-CO",
+        "--start-maximized",
+        "--disable-popup-blocking",
+        # Reduce el aislamiento de sitios (no muestra banner de flag no admitido).
+        "--disable-features=IsolateOrigins,site-per-process",
+    ]
+    proxy = proxy_valido(proxy)
+    if proxy:
+        cmd.append(f"--proxy-server={proxy}")
+    if headless:
+        cmd.append("--headless=new")
+    return cmd
+
+
 def lanzar_perfil_chrome(
-    perfil_id: int, 
+    perfil_id: int,
     proxy: Optional[str] = None,
     headless: bool = False
 ) -> Tuple[int, str]:
@@ -81,31 +118,7 @@ def lanzar_perfil_chrome(
     user_dir = os.path.abspath(f"./perfiles/perfil_{perfil_id}")
     os.makedirs(user_dir, exist_ok=True)
 
-    cmd = [
-        chrome_exe,
-        f"--remote-debugging-port={puerto}",
-        f"--user-data-dir={user_dir}",
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--disable-blink-features=AutomationControlled",
-        "--disable-extensions",
-        "--lang=es-CO",
-        "--start-maximized",
-        "--disable-popup-blocking",
-        # Flags anti-detección adicionales: desactivan el aislamiento de sitios
-        # y el sandbox (reducen señales de automatización a costa de seguridad;
-        # aceptable para perfiles desechables de automatización).
-        "--disable-features=IsolateOrigins,site-per-process",
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-    ]
-
-    proxy = proxy_valido(proxy)
-    if proxy:
-        cmd.append(f"--proxy-server={proxy}")
-
-    if headless:
-        cmd.append("--headless=new")
+    cmd = construir_args_chrome(chrome_exe, puerto, user_dir, proxy, headless)
 
     try:
         print(f"Lanzando perfil {perfil_id} | Puerto: {puerto} | Proxy: {proxy or 'Ninguno'}")
