@@ -569,11 +569,30 @@ async def _click_boton_registro(page, etq: str) -> bool:
         except ERRORES_PW:
             continue
 
-    # Respaldo por rol accesible.
+    # Respaldo por rol accesible (button o link).
+    for rol in ("button", "link"):
+        try:
+            await page.get_by_role(rol, name=re.compile(r"Registr", re.I)).first.click(timeout=4000)
+            logger.info(f"[{etq}] Click en 'Registrarse' (rol {rol}).")
+            return True
+        except ERRORES_PW:
+            continue
+
+    # Respaldo por TEXTO EXACTO visible (cualquier etiqueta clickeable).
     try:
-        await page.get_by_role("button", name=re.compile(r"Registr", re.I)).first.click(timeout=5000)
-        logger.info(f"[{etq}] Click en 'Registrarse' (por rol).")
-        return True
+        loc = page.get_by_text(re.compile(r"^\s*Registrarse\s*$", re.I))
+        n = await loc.count()
+        for i in range(min(n, 10)):
+            el = loc.nth(i)
+            try:
+                if not await el.is_visible():
+                    continue
+                await el.scroll_into_view_if_needed(timeout=2000)
+                await el.click(timeout=4000)
+                logger.info(f"[{etq}] Click en 'Registrarse' (texto exacto visible).")
+                return True
+            except ERRORES_PW:
+                continue
     except ERRORES_PW:
         pass
 
