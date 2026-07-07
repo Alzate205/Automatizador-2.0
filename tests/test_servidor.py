@@ -80,3 +80,26 @@ def test_cuentas_importar(tmp_path, monkeypatch):
                       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")})
     assert r.status_code == 200 and r.json()["guardadas"] == 1
     assert c.get("/api/cuentas").json()["filas"][0]["Usuario"] == "x@y.com"
+
+
+def test_resultados(tmp_path, monkeypatch):
+    pd.DataFrame({"Usuario": ["a"], "Estado": ["exitosa"], "Saldo": [500],
+                  "Verificada": ["si"], "Limitada": [False],
+                  "Registro": ["registro_ok"]}).to_excel(
+        tmp_path / "cuentas_actualizadas.xlsx", index=False)
+    c = _client(tmp_path, monkeypatch)
+    r = c.get("/api/resultados")
+    assert r.status_code == 200
+    assert r.json()["metricas"]["total"] == 1
+    assert r.json()["registro"]["registro_ok"] == 1
+
+
+def test_resultados_exportar(tmp_path, monkeypatch):
+    pd.DataFrame({"Usuario": ["a"], "Saldo": [500]}).to_excel(
+        tmp_path / "cuentas_actualizadas.xlsx", index=False)
+    c = _client(tmp_path, monkeypatch)
+    r = c.get("/api/resultados/exportar")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith(
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    assert len(r.content) > 0

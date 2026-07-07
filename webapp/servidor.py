@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 from fastapi import FastAPI, Request, UploadFile, File
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 import io as _io
 import pandas as _pd
@@ -125,6 +125,24 @@ async def api_cuentas_importar(archivo: UploadFile = File(...)):
     df = _pd.read_excel(_io.BytesIO(contenido))
     df.to_excel(datos.RUTA_EXCEL, index=False)
     return {"ok": True, "guardadas": len(df)}
+
+
+# ---------------- API: resultados ----------------
+
+@app.get("/api/resultados")
+def api_resultados():
+    return datos.resultados_payload()
+
+
+@app.get("/api/resultados/exportar")
+def api_resultados_exportar():
+    df = datos.leer_excel(datos.RUTA_RESULTADOS)
+    contenido = datos.to_excel_bytes(df)
+    return Response(
+        content=contenido,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=resultados.xlsx"},
+    )
 
 
 # ---------------- Estáticos (al final para no tapar /api) ----------------
