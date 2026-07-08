@@ -29,7 +29,9 @@ body{margin:0;background:var(--bg);color:var(--txt);font-family:Segoe UI,system-
 .accion.peligro{background:var(--rojo)}
 .accion.compacta{display:inline-block;width:auto;margin:0;padding:8px 14px}
 #panel{flex:1;display:flex;flex-direction:column;background:var(--panel);border:1px solid var(--borde);border-radius:10px;overflow:hidden}
-#cabecera-estado{padding:10px 14px;border-bottom:1px solid var(--borde);font-weight:600}
+#cabecera-estado{display:flex;align-items:center;gap:12px;padding:10px 14px;border-bottom:1px solid var(--borde);font-weight:600}
+#estado-texto{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#btn-limpiar-consola{flex-shrink:0}
 #progreso-wrap{height:8px;background:var(--panel2)}
 #barra-progreso{height:100%;width:0;background:var(--verde);transition:width .3s}
 #sidebar .ayuda{font-size:11px;color:var(--muted);margin:4px 0 0}

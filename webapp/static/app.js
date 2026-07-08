@@ -72,6 +72,16 @@ $('#btn-detener').onclick = () => post('/api/detener');
 $('#btn-continuar').onclick = () => post('/api/continuar');
 $('#btn-forzar').onclick = () => post('/api/forzar-parada');
 
+// Limpiar consola: vacía la vista y avanza el índice al total actual, para que el
+// polling NO vuelva a volcar lo viejo. No borra bot.log (solo la vista).
+$('#btn-limpiar-consola').onclick = async () => {
+  $('#consola').textContent = '';
+  try {
+    const r = await (await fetch('/api/log?desde=999999999')).json();
+    window.__logDesde = r.total || window.__logDesde;
+  } catch (e) { /* si falla, la vista ya quedó limpia */ }
+};
+
 function claseLinea(l) {
   if (/\[ERROR\]/.test(l)) return 'log-error';
   if (/\[WARNING\]/.test(l)) return 'log-aviso';
@@ -101,7 +111,7 @@ async function pollLog() {
 async function pollEstado() {
   try {
     const e = await (await fetch('/api/estado')).json();
-    $('#cabecera-estado').textContent =
+    $('#estado-texto').textContent =
       `${e.estado} — ${e.fase || ''} — ${e.cuenta || ''} (${e.indice || 0}/${e.total || 0})`;
     const pct = e.total ? Math.round((e.indice / e.total) * 100) : 0;
     $('#barra-progreso').style.width = pct + '%';
