@@ -20,6 +20,7 @@ Devuelve un dict: {saldo, verificada, limitada, estado, timestamp}.
 
 import asyncio
 import logging
+import math
 import os
 import random
 import re
@@ -200,16 +201,63 @@ async def _esperar_listo(page, selector, timeout_ms: int = 15000):
     return None  # visible pero nunca se habilitó (paso anterior incompleto)
 
 
+# Posición actual del cursor que vamos siguiendo nosotros (Playwright no la expone).
+# Sirve para trazar el recorrido DESDE donde está el mouse HASTA el destino.
+_mouse_pos = {"x": 300.0, "y": 300.0}
+
+
+async def _mover_mouse_humano(page, x_dest: float, y_dest: float) -> None:
+    """Mueve el cursor desde su posición actual hasta (x_dest, y_dest) como una MANO
+    real: trayectoria CURVA (Bézier), velocidad que ACELERA y FRENA (easing), pequeño
+    temblor y, a veces, un leve sobrepaso con corrección. Nada de líneas rectas a
+    velocidad constante (eso es lo que se ve robótico)."""
+    x0, y0 = _mouse_pos["x"], _mouse_pos["y"]
+    dist = math.hypot(x_dest - x0, y_dest - y0)
+    if dist < 3:
+        _mouse_pos["x"], _mouse_pos["y"] = x_dest, y_dest
+        return
+
+    # Punto de control desviado perpendicular a la recta -> arco natural.
+    dx, dy = x_dest - x0, y_dest - y0
+    px, py = -dy / dist, dx / dist  # perpendicular normalizada
+    desvio = random.uniform(-0.18, 0.18) * dist
+    cx = (x0 + x_dest) / 2 + px * desvio
+    cy = (y0 + y_dest) / 2 + py * desvio
+
+    # A veces sobrepasamos un poco el destino y corregimos (muy humano).
+    sobrepaso = random.random() < 0.35
+    xt = x_dest + (dx / dist) * random.uniform(4, 14) if sobrepaso else x_dest
+    yt = y_dest + (dy / dist) * random.uniform(4, 14) if sobrepaso else y_dest
+
+    pasos = max(14, min(45, int(dist / 10)))
+    for i in range(1, pasos + 1):
+        t = i / pasos
+        te = t * t * (3 - 2 * t)            # ease-in-out (arranque y frenado suaves)
+        u = 1 - te
+        x = u * u * x0 + 2 * u * te * cx + te * te * xt
+        y = u * u * y0 + 2 * u * te * cy + te * te * yt
+        x += random.uniform(-1.1, 1.1)     # temblor de la mano
+        y += random.uniform(-1.1, 1.1)
+        await page.mouse.move(x, y)
+        # Más lento en los extremos, más rápido en medio (curva de velocidad).
+        await asyncio.sleep(random.uniform(0.004, 0.012) + 0.012 * (1 - math.sin(t * math.pi)))
+
+    if sobrepaso:  # corrección de vuelta al punto exacto
+        await page.mouse.move(x_dest + random.uniform(-1, 1),
+                              y_dest + random.uniform(-1, 1), steps=random.randint(3, 6))
+    _mouse_pos["x"], _mouse_pos["y"] = x_dest, y_dest
+
+
 async def _mover_mouse_a(page, loc) -> None:
-    """Desliza el mouse (con pasos) hasta un punto dentro del elemento, sin hacer
-    clic. Da naturalidad: el cursor VIAJA hacia el campo en vez de teletransportarse,
-    y el clic cae exactamente donde debe (evita roces en campos vecinos)."""
+    """Lleva el cursor, con recorrido humano, hasta un punto dentro del elemento (sin
+    clicar). El clic posterior cae donde ya está el mouse (evita el teletransporte y
+    los roces en campos vecinos)."""
     try:
         box = await loc.bounding_box()
         if box:
-            x = box["x"] + box["width"] * random.uniform(0.35, 0.65)
-            y = box["y"] + box["height"] * random.uniform(0.35, 0.65)
-            await page.mouse.move(x, y, steps=random.randint(6, 14))
+            x = box["x"] + box["width"] * random.uniform(0.3, 0.7)
+            y = box["y"] + box["height"] * random.uniform(0.3, 0.7)
+            await _mover_mouse_humano(page, x, y)
     except ERRORES_PW:
         pass
 
@@ -252,12 +300,10 @@ async def human_type(page, selector, text, delay_range=(90, 240), reintentos: in
     return False
 
 
-async def human_mouse_move(page, steps: int = 8):
-    """Movimiento de mouse más natural."""
+async def human_mouse_move(page, steps: int = 4):
+    """Da unas vueltas naturales con el mouse (recorrido curvo y con inercia)."""
     for _ in range(steps):
-        x = random.randint(100, 1200)
-        y = random.randint(100, 700)
-        await page.mouse.move(x, y, steps=random.randint(3, 8))
+        await _mover_mouse_humano(page, random.randint(150, 1100), random.randint(150, 650))
         await human_delay(0.1, 0.4)
 
 
@@ -1319,7 +1365,7 @@ async def process_user(
             logger.info(f"[{etiqueta}] Navegando a {base_url}")
             await page.goto(base_url, wait_until="domcontentloaded", timeout=45000)
             await human_delay(2.5, 5)
-            await page.mouse.move(random.randint(100, 800), random.randint(100, 500))
+            await _mover_mouse_humano(page, random.randint(100, 800), random.randint(100, 500))
             await human_delay(1, 2.5)
 
             # ---------- Login (con reintentos + deteccion de credenciales) ----------
