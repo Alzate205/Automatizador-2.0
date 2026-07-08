@@ -5,7 +5,7 @@ import preflight
 from procesador_web import (
     _partir_dos, _validar_datos_registro,
     _ciudad_lugar_expedicion, _claves_lugar_expedicion,
-    _coincide_opcion,
+    _coincide_opcion, _password_valida_betplay,
 )
 
 
@@ -64,6 +64,25 @@ def test_claves_lugar_expedicion():
     assert _claves_lugar_expedicion("ARMENIA (QUINDIO)") == ["armenia", "quindio"]
     assert _claves_lugar_expedicion("ARMENIA (ANTIOQUIA)") == ["armenia", "antioquia"]
     assert _claves_lugar_expedicion("Bogotá") == ["bogota"]  # sin tildes
+
+
+# ---------------- _password_valida_betplay (ng-pattern del input) ----------------
+
+def test_password_valida_cumple_patron():
+    # Mayúscula + dígito + uno de . ; , y solo caracteres permitidos.
+    assert _password_valida_betplay("Betplay2026.") is True
+    assert _password_valida_betplay("Abc123;") is True
+    assert _password_valida_betplay("Xy9,zz") is True
+
+
+def test_password_invalida_por_faltar_requisitos():
+    assert _password_valida_betplay("betplay2026.") is False   # sin mayúscula
+    assert _password_valida_betplay("Betplay.") is False       # sin dígito
+    assert _password_valida_betplay("Betplay2026") is False    # sin . ; ,
+    assert _password_valida_betplay("Betplay2026!") is False    # '!' no permitido
+    assert _password_valida_betplay("Bet play26.") is False    # espacio no permitido
+    assert _password_valida_betplay("") is False
+    assert _password_valida_betplay(None) is False
 
 
 # ---------------- _validar_datos_registro (incluye Telefono) ----------------

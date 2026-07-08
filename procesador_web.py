@@ -342,6 +342,17 @@ def _valor_tipo_via(datos: Dict[str, Any]) -> str:
     return TIPO_VIA_VALORES.get(_sin_tildes(bruto), "CL")  # por defecto Calle
 
 
+# Betplay valida la contraseña con ng-pattern en el propio input:
+#   ^(?=.*[A-Z])(?=.*\d)(?=.*[.;,])[A-Za-z\d.;,]+$
+# => al menos una MAYÚSCULA, un DÍGITO, uno de . ; , y SOLO letras/dígitos/.;,
+# Si no cumple, el campo queda ng-invalid y el registro no avanza (sin aviso claro).
+_RE_PASSWORD_BETPLAY = re.compile(r"^(?=.*[A-Z])(?=.*\d)(?=.*[.;,])[A-Za-z\d.;,]+$")
+
+
+def _password_valida_betplay(pwd: Any) -> bool:
+    return bool(_RE_PASSWORD_BETPLAY.match(str(pwd or "")))
+
+
 def _ciudad_lugar_expedicion(valor: Any) -> str:
     """Texto que se TECLEA en el autocompletar: la ciudad, sin el departamento.
 
@@ -1003,7 +1014,17 @@ async def registrar_cuenta(
         # login del header y el del registro); acotamos al FORMULARIO DE REGISTRO
         # (el que contiene cnfPassword) para no escribir en el login por error.
         # Betplay exige mayúscula, dígito y un signo [.;,] (ej. "Betplay2026.").
-        pwd = datos.get("Password", "")
+        pwd = str(datos.get("Password", "") or "")
+        # Validamos el formato ANTES de escribir: si no cumple el ng-pattern, el campo
+        # quedaría ng-invalid y el registro se trabaría sin decir por qué. Mejor
+        # detenerse con un mensaje claro para que el usuario corrija la columna.
+        if not _password_valida_betplay(pwd):
+            await _captura_fallo(page, etq, "contraseña con formato inválido")
+            return {"ok": False, "estado": "error_registro",
+                    "mensaje": ("La contraseña no cumple el formato de Betplay: necesita "
+                                "al menos una MAYÚSCULA, un DÍGITO y uno de . ; , y solo "
+                                "puede tener letras, dígitos y . ; , (ej. 'Betplay2026.'). "
+                                "Corrige la columna Password de esta cuenta.")}
         reg_form = page.locator('form:has(input[formcontrolname="cnfPassword"])')
         if await reg_form.count():
             campo_pass = reg_form.first.locator('input[formcontrolname="password"]')
