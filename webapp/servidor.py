@@ -7,6 +7,7 @@ proyecto.
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -55,8 +56,16 @@ def _bot_vivo() -> bool:
 
 def _lanzar_bot() -> None:
     salida = open(LOG_CONSOLA, "a", encoding="utf-8")
+    # DETACHED: el bot se lanza como proceso independiente para que NO muera si el
+    # servidor se recarga (uvicorn --reload reinicia su worker al cambiar el código;
+    # sin esto, tumbaría al bot a mitad de una corrida, dejando el estado colgado).
+    kwargs: dict = {}
+    if os.name == "nt":
+        kwargs["creationflags"] = (
+            subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS  # type: ignore[attr-defined]
+        )
     estado_proc["proc"] = subprocess.Popen(
-        [sys.executable, "main.py"], stdout=salida, stderr=subprocess.STDOUT
+        [sys.executable, "main.py"], stdout=salida, stderr=subprocess.STDOUT, **kwargs
     )
 
 
@@ -135,10 +144,18 @@ def api_cancelar_espera():
 
 @app.post("/api/forzar-parada")
 def api_forzar_parada():
+    """Parada de emergencia y RECUPERACIÓN. Mata el proceso del bot (si lo tenemos
+    localizado) y deja el panel siempre utilizable: resetea el estado a inactivo y
+    limpia las señales sueltas. Sirve también para destrabar un estado viejo colgado
+    en 'corriendo/esperando' cuando el bot ya no existe (p. ej. murió a mitad)."""
     control.pedir_detener()
     proc = estado_proc["proc"]
     if proc is not None and proc.poll() is None:
         proc.terminate()
+    estado_proc["proc"] = None
+    control.reset_control()  # limpia detener/continuar/cancelar/codigo
+    control.escribir_estado(estado="inactivo", fase="", cuenta="",
+                            mensaje="Detenido a la fuerza", total=0, indice=0, resumen={})
     return {"ok": True}
 
 

@@ -47,6 +47,20 @@ def test_detener_y_continuar_crean_senales(tmp_path, monkeypatch):
     assert os.path.exists(tmp_path / "senal_continuar.flag")
 
 
+def test_forzar_parada_resetea_estado_y_flags(tmp_path, monkeypatch):
+    import control
+    c = _client(tmp_path, monkeypatch)
+    # Estado colgado (bot murió a mitad) + señales sueltas.
+    control.escribir_estado(estado="corriendo", fase="rotando_ip", cuenta="x@y.com")
+    control.pedir_continuar(); control.pedir_cancelar()
+    r = c.post("/api/forzar-parada")
+    assert r.status_code == 200
+    assert c.get("/api/estado").json()["estado"] == "inactivo"
+    assert control.hay_senal_continuar() is False
+    assert control.hay_senal_cancelar() is False
+    assert control.hay_senal_detener() is False
+
+
 def test_estaticos_no_cache(tmp_path, monkeypatch):
     c = _client(tmp_path, monkeypatch)
     r = c.get("/app.js")
