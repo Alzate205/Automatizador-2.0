@@ -1,11 +1,13 @@
 from gestor_perfiles import construir_args_chrome
 
 
-def test_no_usa_flags_de_sandbox_no_admitidos():
+def test_no_usa_flags_no_admitidos():
     # Estos flags muestran el banner "marca de línea de comandos no admitida".
     args = construir_args_chrome("chrome.exe", 9222, "/tmp/perf")
     assert "--no-sandbox" not in args
     assert "--disable-setuid-sandbox" not in args
+    assert "--disable-blink-features=AutomationControlled" not in args
+    assert not any("AutomationControlled" in a for a in args)
 
 
 def test_incluye_puerto_y_perfil():

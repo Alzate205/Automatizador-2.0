@@ -77,10 +77,12 @@ def construir_args_chrome(
     """
     Arma la lista de argumentos para lanzar Chrome.
 
-    NO usa --no-sandbox ni --disable-setuid-sandbox: esos flags hacen que Chrome
-    muestre el banner "marca de línea de comandos no admitida", bajan la seguridad
-    y NO ayudan a evadir detección (las webs no ven esos flags). El segundo,
-    además, es solo de Linux y en Windows no hace nada.
+    Evita los flags que muestran el banner amarillo "marca de línea de comandos no
+    admitida": --no-sandbox, --disable-setuid-sandbox y
+    --disable-blink-features=AutomationControlled. La ocultación de la automación
+    (navigator.webdriver, etc.) la hace playwright-stealth por JavaScript en la
+    página (ver aplicar_stealth en procesador_web), que es más efectivo y NO
+    dispara el banner.
     """
     cmd = [
         chrome_exe,
@@ -88,7 +90,6 @@ def construir_args_chrome(
         f"--user-data-dir={user_dir}",
         "--no-first-run",
         "--no-default-browser-check",
-        "--disable-blink-features=AutomationControlled",
         "--disable-extensions",
         "--lang=es-CO",
         "--start-maximized",
