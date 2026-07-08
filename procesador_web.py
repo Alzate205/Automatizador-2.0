@@ -627,50 +627,37 @@ async def _elegir_lugar_expedicion(page, valor: Any, etq: str) -> bool:
     campo = 'input[formcontrolname="expeditionPlace"]'
     ciudad = _ciudad_lugar_expedicion(valor)
     claves = _claves_lugar_expedicion(valor)  # ['armenia','quindio'] o ['bogota']
-    await human_type(page, campo, ciudad)
-    await human_delay(1.4, 2.5)  # deja cargar el desplegable
 
-    # 1) Clic por TEXTO VISIBLE de la opción. Es lo más robusto: no depende de la
-    #    clase/etiqueta del elemento (que varía). Probamos formas de más específica
-    #    a menos. El '(depto)' es único de la opción (el input solo tiene la ciudad).
-    formas = []
-    if str(valor).strip():
-        formas.append(str(valor).strip())                 # "Armenia (Quindio)"
-    if len(claves) > 1:
-        formas.append(f"({claves[1]})")                   # "(quindio)"
-        formas.append(f"{claves[0]} ({claves[1]})")       # "armenia (quindio)"
-    for forma in formas:
+    # El desplegable REAL de Betplay es <div class="suggestion-box"> con hijos
+    # <div class="suggestion"> ARMENIA (QUINDIO) </div>. Es lo que confirmó el HTML
+    # en vivo, así que lo atacamos con prioridad. Clave: comparación SIN TILDES y en
+    # MINÚSCULAS (las opciones vienen en MAYÚSCULA; los datos pueden venir mezclados,
+    # por eso get_by_text —sensible a mayúsculas— no es fiable aquí).
+    #
+    # Es PASO A PASO: si no se elige de la lista, la fecha de nacimiento (el siguiente
+    # <select>) queda DESHABILITADA. Reintentamos tecleando por si la lista no cargó.
+    selectores_sugerencia = (
+        ".suggestion-box .suggestion, [appsuggestedsearch] .suggestion, .suggestion, "
+        "mat-option, [role='option'], .mat-option, .p-dropdown-item, .ng-option, "
+        "li[role='option'], .autocomplete-option, ngb-typeahead-window button, "
+        ".dropdown-item, [class*='suggestion'], [class*='option'], [class*='result']"
+    )
+
+    for intento in range(1, 4):
+        # Limpiamos por si un intento previo dejó texto (evita "ARMENIAARMENIA").
         try:
-            loc = page.get_by_text(forma, exact=False)
-            m = await loc.count()
+            await page.fill(campo, "")
         except ERRORES_PW:
-            continue
-        for i in range(min(m, 12)):
-            el = loc.nth(i)
-            try:
-                if not await el.is_visible():
-                    continue
-                await el.scroll_into_view_if_needed(timeout=1500)
-                await el.click(timeout=3000)
-                logger.info(f"[{etq}] Lugar de expedicion elegido: {valor}")
-                return True
-            except ERRORES_PW:
-                continue
+            pass
+        await human_type(page, campo, ciudad)
+        await human_delay(1.4, 2.6)  # deja cargar el desplegable
 
-    # 2) Respaldo: escanear contenedores de opciones y casar por texto normalizado
-    #    (tolera tildes). Selectores amplios; el filtro por texto evita falsos clics.
-    candidatos = [
-        page.get_by_role("option"),
-        page.locator("mat-option, [role='option'], .mat-option, .p-dropdown-item, "
-                     ".ng-option, li[role='option'], .autocomplete-option, "
-                     "ngb-typeahead-window button, ul li, ol li, .dropdown-item, "
-                     "[class*='option'], [class*='autocomplete'] *, [class*='result'] *"),
-    ]
-    for loc in candidatos:
+        loc = page.locator(selectores_sugerencia)
         try:
             n = await loc.count()
         except Exception:  # noqa: BLE001
-            continue
+            n = 0
+
         exacta = None
         solo_ciudad = None
         for i in range(min(n, 60)):
@@ -681,15 +668,22 @@ async def _elegir_lugar_expedicion(page, valor: Any, etq: str) -> bool:
                 txt = _sin_tildes(await op.inner_text(timeout=800))
             except Exception:  # noqa: BLE001
                 continue
+            if not txt:
+                continue
             if claves and all(k in txt for k in claves):
                 exacta = op
                 break
             if claves and claves[0] in txt and solo_ciudad is None:
                 solo_ciudad = op
+
+        # Si hay homónimos y no llegó el departamento, NO adivinamos (evita elegir la
+        # ciudad equivocada); solo tomamos "solo ciudad" cuando no hay ambigüedad.
         elegida = exacta if exacta is not None else (solo_ciudad if len(claves) <= 1 else None)
         if elegida is not None:
             try:
+                await elegida.scroll_into_view_if_needed(timeout=1500)
                 await elegida.click(timeout=4000)
+                await human_delay(0.6, 1.2)
                 if exacta is None:
                     logger.warning(
                         f"[{etq}] Lugar de expedicion AMBIGUO ('{valor}'): sin "
@@ -700,6 +694,10 @@ async def _elegir_lugar_expedicion(page, valor: Any, etq: str) -> bool:
                 return True
             except ERRORES_PW:
                 pass
+
+        if intento < 3:
+            logger.info(f"[{etq}] Autocompletar de lugar aun sin opciones; reintento {intento}.")
+            await human_delay(0.6, 1.2)
 
     logger.warning(
         f"[{etq}] No se pudo elegir '{valor}' del autocompletar de lugar de "
