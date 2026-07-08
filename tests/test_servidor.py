@@ -47,6 +47,16 @@ def test_detener_y_continuar_crean_senales(tmp_path, monkeypatch):
     assert os.path.exists(tmp_path / "senal_continuar.flag")
 
 
+def test_log_limpiar_trunca(tmp_path, monkeypatch):
+    (tmp_path / "bot.log").write_text("a\nb\nc\n", encoding="utf-8")
+    c = _client(tmp_path, monkeypatch)
+    assert c.get("/api/log", params={"desde": 0}).json()["total"] == 3
+    r = c.post("/api/log/limpiar")
+    assert r.status_code == 200 and r.json()["ok"] is True
+    despues = c.get("/api/log", params={"desde": 0}).json()
+    assert despues["total"] == 0 and despues["lineas"] == []
+
+
 def test_enviar_codigo(tmp_path, monkeypatch):
     c = _client(tmp_path, monkeypatch)
     r = c.post("/api/codigo", json={"codigo": "123456"})

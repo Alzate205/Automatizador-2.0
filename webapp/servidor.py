@@ -56,6 +56,18 @@ def api_log(desde: int = 0):
     return datos.lineas_log(datos.LOG_BOT, desde)
 
 
+@app.post("/api/log/limpiar")
+def api_log_limpiar():
+    """Vacía bot.log (truncar). El bot lo escribe en modo append, así que si está
+    corriendo, sigue agregando desde el nuevo final sin problema."""
+    try:
+        with open(datos.LOG_BOT, "w", encoding="utf-8"):
+            pass
+    except OSError:
+        pass
+    return {"ok": True}
+
+
 @app.post("/api/iniciar")
 async def api_iniciar(request: Request):
     if _bot_vivo():

@@ -72,14 +72,17 @@ $('#btn-detener').onclick = () => post('/api/detener');
 $('#btn-continuar').onclick = () => post('/api/continuar');
 $('#btn-forzar').onclick = () => post('/api/forzar-parada');
 
-// Limpiar consola: vacía la vista y avanza el índice al total actual, para que el
-// polling NO vuelva a volcar lo viejo. No borra bot.log (solo la vista).
+// Limpiar consola: BORRA bot.log de verdad (para que no vuelva ni al recargar) y
+// limpia la vista. Congelamos el índice en un valor enorme para que ningún sondeo
+// intermedio vuelva a pegar lo viejo mientras se procesa.
 $('#btn-limpiar-consola').onclick = async () => {
+  window.__logDesde = Number.MAX_SAFE_INTEGER;  // frena el re-pegado inmediato
   $('#consola').textContent = '';
+  try { await post('/api/log/limpiar'); } catch (e) { /* ignorar */ }
   try {
     const r = await (await fetch('/api/log?desde=999999999')).json();
-    window.__logDesde = r.total || window.__logDesde;
-  } catch (e) { /* si falla, la vista ya quedó limpia */ }
+    window.__logDesde = r.total || 0;  // 0 si se truncó; total actual si estaba en uso
+  } catch (e) { window.__logDesde = 0; }
 };
 
 function claseLinea(l) {
