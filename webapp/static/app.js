@@ -121,7 +121,9 @@ async function pollEstado() {
     const pct = e.total ? Math.round((e.indice / e.total) * 100) : 0;
     $('#barra-progreso').style.width = pct + '%';
     const corriendo = e.proceso_vivo || ['corriendo', 'esperando_captcha', 'esperando_apuesta', 'esperando_codigo'].includes(e.estado);
-    const esperando = ['esperando_captcha', 'esperando_apuesta'].includes(e.estado);
+    // 'esperando_codigo' también muestra el banner con Continuar: el usuario puede
+    // escribir el código en el NAVEGADOR y pulsar Continuar (o usar la casilla de abajo).
+    const esperando = ['esperando_captcha', 'esperando_apuesta', 'esperando_codigo'].includes(e.estado);
     $('#btn-iniciar').disabled = corriendo;
     $('#btn-detener').disabled = !corriendo;
     $('#btn-continuar').disabled = !esperando;

@@ -50,7 +50,7 @@ from conexion_cdp import construir_endpoint
 from lector_correos import esperar_y_extraer_codigo
 from pausa import pausa_humana
 from preflight import validar_datos, REQUERIDOS_REGISTRO
-from procesador_web import process_user
+from procesador_web import process_user, CODIGO_MANUAL_LISTO
 from rotador_ip import rotar_ip_seguro
 
 # ---------------------------------------------------------------------------
@@ -228,19 +228,39 @@ async def _confirmar_waiter(motivo: str = "captcha") -> bool:
 
 async def _codigo_manual_waiter(etiqueta: str) -> str | None:
     """
-    Proveedor de codigo 2FA MANUAL: pausa el bot en 'esperando_codigo' y espera a
-    que el panel escriba el codigo (senal codigo_2fa.txt). Devuelve el codigo o
-    None si se pide detener o se agota TIMEOUT_CAPTCHA_SEG. Espejo de
-    _confirmar_waiter, pero devolviendo un valor.
+    Proveedor de codigo 2FA MANUAL: pausa el bot en 'esperando_codigo' (IGUAL que el
+    captcha) y espera a que el usuario resuelva el codigo de UNA de dos formas:
+
+      a) escribe el codigo EN EL NAVEGADOR y pulsa CONTINUAR en el dashboard
+         -> devolvemos el sentinela CODIGO_MANUAL_LISTO (no hay que teclear nada);
+      b) escribe el codigo en la casilla del dashboard y pulsa 'Enviar codigo'
+         -> devolvemos el codigo para que el bot lo teclee en el navegador.
+
+    Devuelve None si se cancela/detiene o se agota TIMEOUT_CAPTCHA_SEG.
     """
     control.limpiar_codigo()
+    control.limpiar_continuar()
+    control.limpiar_cancelar()
     control.escribir_estado(
         estado="esperando_codigo", fase="codigo_2fa",
-        mensaje=f"Ingresa el codigo de correo de la cuenta: {etiqueta}",
+        mensaje=(f"Cuenta {etiqueta}: escribe el codigo de verificacion EN EL NAVEGADOR "
+                 "y pulsa Continuar; o escribelo aqui y pulsa 'Enviar codigo'."),
     )
-    log.warning(f"[{etiqueta}] Esperando el codigo 2FA manual desde el panel...")
+    log.warning(f"[{etiqueta}] Esperando el codigo 2FA (navegador+Continuar o casilla del panel)...")
     esperado = 0
-    while not control.hay_codigo():
+    while True:
+        if control.hay_codigo():  # (b) el usuario lo escribio en la casilla del panel
+            codigo = control.leer_codigo()
+            control.limpiar_codigo()
+            control.escribir_estado(estado="corriendo", fase="codigo_2fa", mensaje="Codigo recibido")
+            log.info(f"[{etiqueta}] Codigo 2FA recibido de la casilla del panel.")
+            return codigo
+        if control.hay_senal_continuar():  # (a) lo ingreso en el navegador y da Continuar
+            control.limpiar_continuar()
+            control.escribir_estado(estado="corriendo", fase="codigo_2fa",
+                                    mensaje="Continuar (codigo ingresado en el navegador)")
+            log.info(f"[{etiqueta}] Continuar: el usuario ingreso el codigo en el navegador.")
+            return CODIGO_MANUAL_LISTO
         if control.hay_senal_cancelar() or control.hay_senal_detener():
             control.limpiar_cancelar()
             control.escribir_estado(estado="corriendo", fase="codigo_2fa", mensaje="Cancelado")
@@ -251,11 +271,6 @@ async def _codigo_manual_waiter(etiqueta: str) -> str | None:
             log.warning(f"[{etiqueta}] Timeout esperando el codigo manual; sigo sin codigo.")
             control.escribir_estado(estado="corriendo", fase="codigo_2fa", mensaje="Sin codigo (timeout)")
             return None
-    codigo = control.leer_codigo()
-    control.limpiar_codigo()
-    control.escribir_estado(estado="corriendo", fase="codigo_2fa", mensaje="Codigo recibido")
-    log.info(f"[{etiqueta}] Codigo 2FA manual recibido del panel.")
-    return codigo
 
 
 # ---------------------------------------------------------------------------

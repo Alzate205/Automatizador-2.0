@@ -603,6 +603,12 @@ async def _seleccionar_opcion(page, selector: str, valor: str, etiqueta: str = "
     return False
 
 
+# Sentinela que un proveedor de código MANUAL devuelve para decir "el usuario ya
+# ingresó y validó el código en el NAVEGADOR (pulsó Continuar)". En ese caso no hay
+# que escribir nada en el campo: solo seguir.
+CODIGO_MANUAL_LISTO = "__CODIGO_MANUAL_LISTO__"
+
+
 async def _verificar_celular(
     page,
     code_provider: Optional[Callable[[], Awaitable[Optional[str]]]] = None,
@@ -635,11 +641,11 @@ async def _verificar_celular(
         logger.info("Sin paso de verificación de celular (el campo no apareció).")
         return False
 
-    logger.info("Verificación de celular detectada; solicitando código por correo...")
+    logger.info("Verificación de celular detectada; obteniendo código...")
     if code_provider is None:
         logger.warning(
-            "No hay proveedor de código (¿ClaveCorreo vacía?); "
-            "escribe el código MANUALMENTE en el navegador."
+            "No hay proveedor de código (¿ClaveCorreo vacía y 'código manual' "
+            "desactivado?); no se espera el código."
         )
         return False
 
@@ -648,6 +654,19 @@ async def _verificar_celular(
         codigo = await code_provider()
     except Exception as e:  # noqa: BLE001
         logger.warning(f"El proveedor de código de registro falló: {e}")
+
+    # Modo MANUAL por navegador: el usuario escribió el código él mismo y pulsó
+    # Continuar. No tecleamos nada, pero por si NO pulsó 'Validar' en la página, lo
+    # intentamos best-effort (si ya lo hizo, el clic simplemente no encuentra el botón).
+    if codigo == CODIGO_MANUAL_LISTO:
+        logger.info("Código de verificación gestionado manualmente por el usuario en el navegador.")
+        try:
+            await page.locator('input[type="submit"][value="Validar"]').first.click(timeout=3000)
+            await human_delay(3, 5)
+        except ERRORES_PW:
+            pass
+        await human_delay(1, 2)
+        return True
 
     if not codigo:
         logger.warning("No se pudo obtener el código de verificación de registro.")
