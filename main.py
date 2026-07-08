@@ -340,9 +340,11 @@ async def procesar_fila(row, perfil_id: int, tareas: set, apuesta_cfg: dict) -> 
     if email and clave_correo:
         async def code_provider():
             return await esperar_y_extraer_codigo(str(email), clave_correo, REMITENTE_2FA)
-    elif CODIGO_MANUAL:
-        # Sin ClaveCorreo y con modo manual activo: pausamos y pedimos el codigo
-        # por el panel en vez de leerlo por IMAP.
+    else:
+        # SIN ClaveCorreo: no se puede leer el codigo por IMAP, asi que SIEMPRE
+        # esperamos a que el usuario lo ingrese (en el navegador + Continuar, o en la
+        # casilla del panel). Antes esto dependia del toggle 'codigo manual'; ahora es
+        # automatico para no dejar la cuenta a medias sin dar chance de meter el codigo.
         async def code_provider():
             return await _codigo_manual_waiter(etiqueta)
 

@@ -287,11 +287,43 @@ $('#btn-agregar-fila').onclick = () => {
   pintarTabla([...recogerFilasCuentas(), filaVacia()]);
 };
 
+// Mismo patrón que exige Betplay (y que valida el bot): mayúscula + dígito + uno
+// de . ; , y SOLO letras/dígitos/.;, sin espacios. Ej válido: "Betplay2026."
+const RE_PASSWORD_BETPLAY = /^(?=.*[A-Z])(?=.*\d)(?=.*[.;,])[A-Za-z\d.;,]+$/;
+
+function avisosCuentas(filas) {
+  const esReg = f => String(f.Modo || 'registro').toLowerCase() === 'registro';
+  const idf = f => f.Usuario || f.Correo || f.Cedula || '(sin id)';
+  const reg = filas.filter(esReg);
+  const sinClave = reg.filter(f => !String(f.ClaveCorreo || '').trim());
+  const passMal = reg.filter(f => {
+    const p = String(f.Password || '').trim();
+    return p && !RE_PASSWORD_BETPLAY.test(p);
+  });
+  const passVacia = reg.filter(f => !String(f.Password || '').trim());
+  const av = [];
+  if (sinClave.length) av.push(
+    `• ${sinClave.length} cuenta(s) SIN "Clave correo": tendrás que ingresar el CÓDIGO ` +
+    `de verificación A MANO. El bot se detiene en el paso del código y espera a que lo ` +
+    `escribas en el navegador y pulses Continuar (o lo pongas en la casilla del panel).\n` +
+    `    → ${sinClave.map(idf).join(', ')}`);
+  if (passMal.length) av.push(
+    `• ${passMal.length} cuenta(s) con CONTRASEÑA que NO cumple el formato de Betplay:\n` +
+    `    debe tener al menos una MAYÚSCULA, un DÍGITO y uno de . ; ,  y solo letras, ` +
+    `dígitos y . ; ,  (sin espacios ni otros símbolos). Ej: "Betplay2026."\n` +
+    `    → ${passMal.map(idf).join(', ')}`);
+  if (passVacia.length) av.push(`• ${passVacia.length} cuenta(s) de registro SIN contraseña.`);
+  return av;
+}
+
 $('#btn-guardar-cuentas').onclick = async () => {
-  const r = await post('/api/cuentas', { filas: recogerFilasCuentas() });
+  const filas = recogerFilasCuentas();
+  const r = await post('/api/cuentas', { filas });
   $('#estado-cuentas').textContent = 'Guardadas: ' + (r.guardadas ?? '?');
   setTimeout(() => { $('#estado-cuentas').textContent = ''; }, 3000);
   actualizarContador();
+  const av = avisosCuentas(filas);
+  if (av.length) alert('Guardado ✔\n\nTen en cuenta:\n\n' + av.join('\n\n'));
 };
 
 $('#btn-plantilla').onclick = async () => {
