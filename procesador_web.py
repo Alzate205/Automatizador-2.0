@@ -625,28 +625,28 @@ def _partir_dos(principal, secundario) -> tuple:
     return " ".join(partes[:-1]), partes[-1]
 
 
-async def _elegir_lugar_expedicion(page, valor: Any, etq: str) -> bool:
+async def _elegir_autocompletar(page, campo: str, valor: Any, etq: str,
+                                nombre_campo: str = "autocompletar") -> bool:
     """
-    Llena el AUTOCOMPLETAR de "Lugar de expedición": escribe la ciudad, espera la
-    lista y hace clic en la opción correcta.
+    Llena un AUTOCOMPLETAR de ciudad de Betplay (Lugar de expedición y Municipio de
+    residencia usan el MISMO componente): escribe la ciudad, espera la lista de
+    sugerencias y hace CLIC en la opción correcta. NO basta con teclear: si no se
+    elige de la lista, el campo queda inválido (sin check verde) y —al ser paso a
+    paso— el siguiente campo (fecha de nacimiento / contraseña) no se habilita.
 
-    Hay ciudades homónimas (p. ej. ARMENIA en Quindío y en Antioquia). Para elegir
-    bien, pon en LugarExpedicion el texto con el departamento como aparece en la
-    lista: 'ARMENIA (QUINDIO)'. Si solo pones la ciudad y hay varias opciones, se
-    toma la primera que coincida (con aviso). Devuelve True si hizo clic.
+    Hay ciudades homónimas (p. ej. ARMENIA en Quindío y Antioquia). Para elegir bien,
+    pon el texto con el departamento como aparece en la lista: 'ARMENIA (QUINDIO)'. Si
+    solo pones la ciudad y hay varias opciones, se toma la primera (con aviso).
+    Devuelve True si hizo clic en una sugerencia.
     """
-    campo = 'input[formcontrolname="expeditionPlace"]'
     ciudad = _ciudad_lugar_expedicion(valor)
     claves = _claves_lugar_expedicion(valor)  # ['armenia','quindio'] o ['bogota']
 
     # El desplegable REAL de Betplay es <div class="suggestion-box"> con hijos
-    # <div class="suggestion"> ARMENIA (QUINDIO) </div>. Es lo que confirmó el HTML
-    # en vivo, así que lo atacamos con prioridad. Clave: comparación SIN TILDES y en
-    # MINÚSCULAS (las opciones vienen en MAYÚSCULA; los datos pueden venir mezclados,
-    # por eso get_by_text —sensible a mayúsculas— no es fiable aquí).
-    #
-    # Es PASO A PASO: si no se elige de la lista, la fecha de nacimiento (el siguiente
-    # <select>) queda DESHABILITADA. Reintentamos tecleando por si la lista no cargó.
+    # <div class="suggestion"> ARMENIA (QUINDIO) </div> (confirmado por HTML en vivo).
+    # Clave: comparar SIN TILDES y en MINÚSCULAS (las opciones vienen en MAYÚSCULA;
+    # los datos pueden venir mezclados, por eso get_by_text —sensible a mayúsculas—
+    # no es fiable). Reintentamos tecleando por si la lista tarda en cargar.
     selectores_sugerencia = (
         ".suggestion-box .suggestion, [appsuggestedsearch] .suggestion, .suggestion, "
         "mat-option, [role='option'], .mat-option, .p-dropdown-item, .ng-option, "
@@ -697,24 +697,30 @@ async def _elegir_lugar_expedicion(page, valor: Any, etq: str) -> bool:
                 await human_delay(0.6, 1.2)
                 if exacta is None:
                     logger.warning(
-                        f"[{etq}] Lugar de expedicion AMBIGUO ('{valor}'): sin "
-                        "departamento; se tomo la primera opcion. Usa 'CIUDAD (DEPTO)'."
+                        f"[{etq}] {nombre_campo} AMBIGUO ('{valor}'): sin departamento; "
+                        "se tomo la primera opcion. Usa 'CIUDAD (DEPTO)'."
                     )
                 else:
-                    logger.info(f"[{etq}] Lugar de expedicion elegido: {valor}")
+                    logger.info(f"[{etq}] {nombre_campo} elegido: {valor}")
                 return True
             except ERRORES_PW:
                 pass
 
         if intento < 3:
-            logger.info(f"[{etq}] Autocompletar de lugar aun sin opciones; reintento {intento}.")
+            logger.info(f"[{etq}] Autocompletar de {nombre_campo} aun sin opciones; reintento {intento}.")
             await human_delay(0.6, 1.2)
 
     logger.warning(
-        f"[{etq}] No se pudo elegir '{valor}' del autocompletar de lugar de "
-        "expedicion (¿cambió la lista o el texto no coincide?); se deja el texto tecleado."
+        f"[{etq}] No se pudo elegir '{valor}' del autocompletar de {nombre_campo} "
+        "(¿cambió la lista o el texto no coincide?); se deja el texto tecleado."
     )
     return False
+
+
+async def _elegir_lugar_expedicion(page, valor: Any, etq: str) -> bool:
+    """Autocompletar de 'Lugar de expedición' (mismo componente que Municipio)."""
+    return await _elegir_autocompletar(
+        page, 'input[formcontrolname="expeditionPlace"]', valor, etq, "Lugar de expedicion")
 
 
 async def _click_boton_registro(page, etq: str) -> bool:
@@ -1007,7 +1013,13 @@ async def registrar_cuenta(
             return await _abortar_paso(page, etq, "Dirección (parte 2)")
         if not await human_type(page, 'input[formcontrolname="address3"]', datos.get("Direccion3", "87")):
             return await _abortar_paso(page, etq, "Dirección (parte 3)")
-        if not await human_type(page, 'input[formcontrolname="cityAddress"]', datos.get("Ciudad", "BOGOTA")):
+        # Municipio: es un AUTOCOMPLETAR (mismo componente que Lugar de expedición),
+        # NO un input simple. Hay que ELEGIR de la lista o queda inválido y la
+        # contraseña (el paso siguiente) no se habilita.
+        if not await _elegir_autocompletar(
+            page, 'input[formcontrolname="cityAddress"]', datos.get("Ciudad", "BOGOTA"),
+            etq, "Municipio",
+        ):
             return await _abortar_paso(page, etq, "Municipio")
 
         # Contraseña + confirmación. OJO: hay DOS campos 'password' en la página (el
