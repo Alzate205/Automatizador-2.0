@@ -302,17 +302,21 @@ function avisosCuentas(filas) {
   });
   const passVacia = reg.filter(f => !String(f.Password || '').trim());
   const av = [];
+  // "Clave correo" es OPCIONAL y libre (puede ser cualquier cosa o quedar vacía). No
+  // se valida su formato; si está vacía SOLO informamos que el código irá a mano.
   if (sinClave.length) av.push(
-    `• ${sinClave.length} cuenta(s) SIN "Clave correo": tendrás que ingresar el CÓDIGO ` +
-    `de verificación A MANO. El bot se detiene en el paso del código y espera a que lo ` +
-    `escribas en el navegador y pulses Continuar (o lo pongas en la casilla del panel).\n` +
-    `    → ${sinClave.map(idf).join(', ')}`);
+    `• ${sinClave.length} cuenta(s) sin "Clave correo" (es opcional, puedes dejarla ` +
+    `vacía): en esas el CÓDIGO de verificación lo ingresarás A MANO. El bot se detiene ` +
+    `en el paso del código y espera a que lo escribas en el navegador y pulses Continuar ` +
+    `(o lo pongas en la casilla del panel).\n    → ${sinClave.map(idf).join(', ')}`);
+  // La ÚNICA contraseña con reglas de formato es la de BETPLAY (columna "Password").
   if (passMal.length) av.push(
-    `• ${passMal.length} cuenta(s) con CONTRASEÑA que NO cumple el formato de Betplay:\n` +
-    `    debe tener al menos una MAYÚSCULA, un DÍGITO y uno de . ; ,  y solo letras, ` +
-    `dígitos y . ; ,  (sin espacios ni otros símbolos). Ej: "Betplay2026."\n` +
-    `    → ${passMal.map(idf).join(', ')}`);
-  if (passVacia.length) av.push(`• ${passVacia.length} cuenta(s) de registro SIN contraseña.`);
+    `• ${passMal.length} cuenta(s) cuya CONTRASEÑA DE BETPLAY (columna "Password") NO ` +
+    `cumple el formato que exige la página:\n    debe tener al menos una MAYÚSCULA, un ` +
+    `DÍGITO y uno de . ; ,  y solo letras, dígitos y . ; ,  (sin espacios ni otros ` +
+    `símbolos). Ej: "Betplay2026."\n    → ${passMal.map(idf).join(', ')}`);
+  if (passVacia.length) av.push(
+    `• ${passVacia.length} cuenta(s) de registro sin CONTRASEÑA DE BETPLAY ("Password").`);
   return av;
 }
 
