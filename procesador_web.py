@@ -410,7 +410,7 @@ def _coincide_opcion(texto_opcion: str, objetivos: list) -> bool:
 
 
 async def _seleccionar_opcion(page, selector: str, valor: str, etiqueta: str = "",
-                              textos=None) -> bool:
+                              textos=None, timeout_ms: int = 15000) -> bool:
     """
     Elige una opción en un desplegable, sea <select> NATIVO o uno PERSONALIZADO
     (Angular Material, PrimeNG, ng-select, etc.).
@@ -432,7 +432,7 @@ async def _seleccionar_opcion(page, selector: str, valor: str, etiqueta: str = "
     # El form es PASO A PASO: esperamos a que el desplegable esté HABILITADO. Si no
     # se habilita, es que un campo anterior no quedó bien lleno; reintentamos poco.
     for intento in range(1, 3):
-        ctrl = await _esperar_listo(page, selector)
+        ctrl = await _esperar_listo(page, selector, timeout_ms=timeout_ms)
         if ctrl is None:
             if intento < 2:
                 await human_delay(0.8, 1.6)
@@ -963,14 +963,17 @@ async def registrar_cuenta(
         if segundo_apellido:
             await human_type(page, 'input[formcontrolname="lastName2"]', segundo_apellido)
 
-        # 8) Nacionalidad (SIEMPRE, aunque muestre COLOMBIA por defecto).
+        # 8) Nacionalidad: suele venir PRE-LLENADA con COLOMBIA (campo fijo, no un
+        #    <select>). Intento seleccionarla por si en algún caso es desplegable,
+        #    pero NO detengo el registro si no aplica (ya está puesta). Espera corta
+        #    para no perder tiempo si el campo no existe como select.
         if not await _seleccionar_opcion(
             page,
-            'select[formcontrolname="nationality"], select[formcontrolname="nacionality"], '
+            'select[formcontrolname="nationality"], select[formcontrolname="nacionalidad"], '
             'select[formcontrolname="country"], select[formcontrolname="pais"]',
-            "COLOMBIA", etq, textos=["COLOMBIA", "Colombia"],
+            "COLOMBIA", etq, textos=["COLOMBIA", "Colombia"], timeout_ms=4000,
         ):
-            return await _abortar_paso(page, etq, "Nacionalidad")
+            logger.info(f"[{etq}] Nacionalidad no es un select o ya está puesta (COLOMBIA); se continúa.")
 
         # 9) Género.
         val_gen = _valor_genero(datos)
