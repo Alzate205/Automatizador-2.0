@@ -26,6 +26,7 @@ ESTADO_JSON = "estado_bot.json"
 CONFIG_JSON = "config_run.json"
 SENAL_DETENER = "senal_detener.flag"
 SENAL_CONTINUAR = "senal_continuar.flag"
+SENAL_CANCELAR = "senal_cancelar.flag"
 CODIGO_2FA = "codigo_2fa.txt"
 LOG_BOT = "bot.log"
 
@@ -137,6 +138,19 @@ def limpiar_continuar() -> None:
     _borrar(SENAL_CONTINUAR)
 
 
+def pedir_cancelar() -> None:
+    """Cancela una espera de captcha/apuesta: el bot aborta la cuenta SIN enviar."""
+    _crear(SENAL_CANCELAR)
+
+
+def hay_senal_cancelar() -> bool:
+    return _existe(SENAL_CANCELAR)
+
+
+def limpiar_cancelar() -> None:
+    _borrar(SENAL_CANCELAR)
+
+
 # ---------------------------------------------------------------------------
 # Canal del codigo 2FA manual (dashboard -> bot)
 # ---------------------------------------------------------------------------
@@ -172,4 +186,5 @@ def reset_control() -> None:
     """Limpia las senales antes de una nueva corrida."""
     limpiar_detener()
     limpiar_continuar()
+    limpiar_cancelar()
     limpiar_codigo()

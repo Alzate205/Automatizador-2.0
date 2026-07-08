@@ -188,27 +188,34 @@ def _configurar_log_archivo() -> None:
     logging.getLogger("procesador_web").setLevel(logging.INFO)
 
 
-async def _confirmar_waiter(motivo: str = "captcha") -> None:
+async def _confirmar_waiter(motivo: str = "captcha") -> bool:
     """
     Pausa el bot hasta que el dashboard cree la senal "Continuar" (o se alcance
-    TIMEOUT_CAPTCHA_SEG, o se pida detener). Sirve para el CAPTCHA del registro
-    (motivo="captcha") y para confirmar a mano una apuesta preparada
-    (motivo="apuesta").
+    TIMEOUT_CAPTCHA_SEG, o se pida cancelar/detener). Sirve para el CAPTCHA del
+    registro (motivo="captcha") y para confirmar a mano una apuesta (motivo="apuesta").
+
+    Devuelve True si hay que CONTINUAR (el usuario pulso Continuar, o vencio el
+    timeout y se sigue de todos modos) y False si se CANCELA (el usuario pulso
+    Cancelar o Detener): en ese caso el llamador debe abortar sin enviar.
     """
     if motivo == "apuesta":
         estado, fase = "esperando_apuesta", "apuesta"
         msg = "Revisa la apuesta en el navegador y pulsa Continuar para confirmarla"
     else:
         estado, fase = "esperando_captcha", "captcha"
-        msg = "Resuelve el CAPTCHA en el navegador y pulsa Continuar"
+        msg = "Resuelve el CAPTCHA en el navegador y pulsa Continuar (o Cancelar)"
 
     control.limpiar_continuar()
+    control.limpiar_cancelar()
     control.escribir_estado(estado=estado, fase=fase, mensaje=msg)
     log.warning(f"Esperando 'Continuar' desde el dashboard ({motivo})...")
     esperado = 0
     while not control.hay_senal_continuar():
-        if control.hay_senal_detener():
-            break
+        if control.hay_senal_cancelar() or control.hay_senal_detener():
+            log.warning(f"Espera de {motivo} CANCELADA desde el dashboard; se aborta sin enviar.")
+            control.limpiar_cancelar()
+            control.limpiar_continuar()
+            return False
         await asyncio.sleep(2)
         esperado += 2
         if esperado >= TIMEOUT_CAPTCHA_SEG:
@@ -216,6 +223,7 @@ async def _confirmar_waiter(motivo: str = "captcha") -> None:
             break
     control.limpiar_continuar()
     control.escribir_estado(estado="corriendo", fase="post-confirmacion", mensaje="Continuando")
+    return True
 
 
 async def _codigo_manual_waiter(etiqueta: str) -> str | None:

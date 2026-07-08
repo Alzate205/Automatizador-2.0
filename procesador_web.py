@@ -1066,7 +1066,12 @@ async def registrar_cuenta(
         # si no, hacemos una pausa fija como respaldo.
         logger.warning("Si aparece un reCAPTCHA, resuelvelo MANUALMENTE en el navegador.")
         if captcha_waiter is not None:
-            await captcha_waiter()
+            # Si el usuario CANCELA la espera (boton Cancelar del panel), abortamos
+            # SIN enviar el formulario. El waiter devuelve False en ese caso.
+            if await captcha_waiter() is False:
+                logger.warning("Espera de captcha cancelada por el usuario; registro abortado sin enviar.")
+                return {"ok": False, "estado": "cancelado",
+                        "mensaje": "Espera de captcha cancelada por el usuario"}
         else:
             logger.info(
                 f"Esperando ~{ESPERA_CAPTCHA_SEG[0]}-{ESPERA_CAPTCHA_SEG[1]} s para la resolucion manual..."
@@ -1867,7 +1872,9 @@ async def apostar(
             "Revisa y confirma a mano."
         )
         if confirmar_waiter is not None:
-            await confirmar_waiter("apuesta")
+            if await confirmar_waiter("apuesta") is False:
+                logger.warning(f"[{etiqueta}] Confirmacion de apuesta cancelada por el usuario.")
+                return "cancelada"
         return f"preparada: {detalle}"
     except ERRORES_PW as e:
         logger.warning(f"[{etiqueta}] No se pudo preparar la apuesta {tipo}: {e}")

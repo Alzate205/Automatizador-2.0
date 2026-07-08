@@ -47,6 +47,18 @@ def test_detener_y_continuar_crean_senales(tmp_path, monkeypatch):
     assert os.path.exists(tmp_path / "senal_continuar.flag")
 
 
+def test_cancelar_espera_sin_proceso_limpia_estado(tmp_path, monkeypatch):
+    import control
+    c = _client(tmp_path, monkeypatch)
+    # Simula un estado viejo atascado en 'esperando_captcha' sin proceso vivo.
+    control.escribir_estado(estado="esperando_captcha", fase="captcha", cuenta="x@y.com")
+    r = c.post("/api/cancelar-espera")
+    assert r.status_code == 200 and r.json()["ok"] is True
+    # Sin proceso vivo, el estado se desbloquea y la señal no queda colgada.
+    assert c.get("/api/estado").json()["estado"] == "inactivo"
+    assert control.hay_senal_cancelar() is False
+
+
 def test_log_limpiar_trunca(tmp_path, monkeypatch):
     (tmp_path / "bot.log").write_text("a\nb\nc\n", encoding="utf-8")
     c = _client(tmp_path, monkeypatch)

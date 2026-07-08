@@ -71,6 +71,7 @@ $('#btn-iniciar').onclick = () => {
 $('#btn-detener').onclick = () => post('/api/detener');
 $('#btn-continuar').onclick = () => post('/api/continuar');
 $('#btn-continuar-2').onclick = () => post('/api/continuar');
+$('#btn-cancelar-espera').onclick = () => post('/api/cancelar-espera');
 $('#btn-forzar').onclick = () => post('/api/forzar-parada');
 
 // Limpiar consola: BORRA bot.log de verdad (para que no vuelva ni al recargar) y

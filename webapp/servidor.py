@@ -93,6 +93,19 @@ def api_continuar():
     return {"ok": True}
 
 
+@app.post("/api/cancelar-espera")
+def api_cancelar_espera():
+    """Cancela una espera de captcha/apuesta. Si el bot sigue vivo, crea la señal de
+    cancelación para que aborte la cuenta SIN enviar. Si NO hay proceso (estado viejo
+    atascado en 'esperando_captcha'), limpia el estado para desbloquear el panel."""
+    control.pedir_cancelar()
+    if not _bot_vivo():
+        control.limpiar_cancelar()
+        control.escribir_estado(estado="inactivo", fase="", cuenta="",
+                                mensaje="Espera cancelada (no había proceso activo)")
+    return {"ok": True}
+
+
 @app.post("/api/forzar-parada")
 def api_forzar_parada():
     control.pedir_detener()
