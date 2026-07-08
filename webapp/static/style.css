@@ -35,6 +35,9 @@ body{margin:0;background:var(--bg);color:var(--txt);font-family:Segoe UI,system-
 #progreso-wrap{height:8px;background:var(--panel2)}
 #barra-progreso{height:100%;width:0;background:var(--verde);transition:width .3s}
 #sidebar .ayuda{font-size:11px;color:var(--muted);margin:4px 0 0}
+#accion-wrap{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 14px;border-bottom:2px solid var(--amarillo);animation:latido 1.6s ease-in-out infinite}
+#accion-wrap #accion-msg{flex:1;min-width:0;color:var(--txt);font-weight:700}
+@keyframes latido{0%,100%{background:rgba(245,158,11,.10)}50%{background:rgba(245,158,11,.26)}}
 #codigo-wrap{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 14px;background:rgba(59,130,246,.12);border-bottom:1px solid var(--azul)}
 #codigo-wrap #codigo-msg{color:var(--txt);font-weight:600}
 #codigo-input{background:var(--panel2);color:var(--txt);border:1px solid var(--borde);border-radius:6px;padding:8px 10px;font-size:15px;letter-spacing:2px;width:160px}

@@ -70,6 +70,7 @@ $('#btn-iniciar').onclick = () => {
 };
 $('#btn-detener').onclick = () => post('/api/detener');
 $('#btn-continuar').onclick = () => post('/api/continuar');
+$('#btn-continuar-2').onclick = () => post('/api/continuar');
 $('#btn-forzar').onclick = () => post('/api/forzar-parada');
 
 // Limpiar consola: BORRA bot.log de verdad (para que no vuelva ni al recargar) y
@@ -123,6 +124,18 @@ async function pollEstado() {
     $('#btn-iniciar').disabled = corriendo;
     $('#btn-detener').disabled = !corriendo;
     $('#btn-continuar').disabled = !esperando;
+
+    // Banner de acción: cuando el bot espera al usuario (captcha o revisar apuesta)
+    // NO está trabado; mostramos la instrucción del bot y un Continuar visible, para
+    // que no parezca colgado. Sin él, el usuario ve 'esperando_captcha' y no sabe qué hacer.
+    const accionWrap = $('#accion-wrap');
+    if (esperando) {
+      $('#accion-msg').textContent = e.mensaje ||
+        'Resuelve el CAPTCHA en el navegador (Chrome del bot) y pulsa Continuar.';
+      if (accionWrap.hidden) accionWrap.hidden = false;
+    } else if (!accionWrap.hidden) {
+      accionWrap.hidden = true;
+    }
 
     // Casilla de código 2FA manual: aparece solo cuando el bot lo pide.
     const pideCodigo = e.estado === 'esperando_codigo';
