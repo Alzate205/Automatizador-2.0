@@ -626,30 +626,59 @@ async def _elegir_lugar_expedicion(page, valor: Any, etq: str) -> bool:
     """
     campo = 'input[formcontrolname="expeditionPlace"]'
     ciudad = _ciudad_lugar_expedicion(valor)
-    claves = _claves_lugar_expedicion(valor)
+    claves = _claves_lugar_expedicion(valor)  # ['armenia','quindio'] o ['bogota']
     await human_type(page, campo, ciudad)
-    await human_delay(1.2, 2.2)  # deja cargar el desplegable
+    await human_delay(1.4, 2.5)  # deja cargar el desplegable
 
-    # Localizadores candidatos para las opciones (cubre varias librerías de UI).
+    # 1) Clic por TEXTO VISIBLE de la opción. Es lo más robusto: no depende de la
+    #    clase/etiqueta del elemento (que varía). Probamos formas de más específica
+    #    a menos. El '(depto)' es único de la opción (el input solo tiene la ciudad).
+    formas = []
+    if str(valor).strip():
+        formas.append(str(valor).strip())                 # "Armenia (Quindio)"
+    if len(claves) > 1:
+        formas.append(f"({claves[1]})")                   # "(quindio)"
+        formas.append(f"{claves[0]} ({claves[1]})")       # "armenia (quindio)"
+    for forma in formas:
+        try:
+            loc = page.get_by_text(forma, exact=False)
+            m = await loc.count()
+        except ERRORES_PW:
+            continue
+        for i in range(min(m, 12)):
+            el = loc.nth(i)
+            try:
+                if not await el.is_visible():
+                    continue
+                await el.scroll_into_view_if_needed(timeout=1500)
+                await el.click(timeout=3000)
+                logger.info(f"[{etq}] Lugar de expedicion elegido: {valor}")
+                return True
+            except ERRORES_PW:
+                continue
+
+    # 2) Respaldo: escanear contenedores de opciones y casar por texto normalizado
+    #    (tolera tildes). Selectores amplios; el filtro por texto evita falsos clics.
     candidatos = [
         page.get_by_role("option"),
-        page.locator("mat-option"),
-        page.locator("[role='option'], .mat-option, .autocomplete-option, "
-                     "ngb-typeahead-window button, ul.dropdown-menu li, li.option"),
+        page.locator("mat-option, [role='option'], .mat-option, .p-dropdown-item, "
+                     ".ng-option, li[role='option'], .autocomplete-option, "
+                     "ngb-typeahead-window button, ul li, ol li, .dropdown-item, "
+                     "[class*='option'], [class*='autocomplete'] *, [class*='result'] *"),
     ]
     for loc in candidatos:
         try:
             n = await loc.count()
         except Exception:  # noqa: BLE001
             continue
-        if not n:
-            continue
         exacta = None
         solo_ciudad = None
-        for i in range(min(n, 25)):
+        for i in range(min(n, 60)):
             op = loc.nth(i)
             try:
-                txt = _sin_tildes(await op.inner_text(timeout=1500))
+                if not await op.is_visible():
+                    continue
+                txt = _sin_tildes(await op.inner_text(timeout=800))
             except Exception:  # noqa: BLE001
                 continue
             if claves and all(k in txt for k in claves):
@@ -657,9 +686,7 @@ async def _elegir_lugar_expedicion(page, valor: Any, etq: str) -> bool:
                 break
             if claves and claves[0] in txt and solo_ciudad is None:
                 solo_ciudad = op
-        elegida = exacta
-        if elegida is None and len(claves) <= 1:
-            elegida = solo_ciudad  # solo ciudad -> aceptamos la 1a coincidencia
+        elegida = exacta if exacta is not None else (solo_ciudad if len(claves) <= 1 else None)
         if elegida is not None:
             try:
                 await elegida.click(timeout=4000)
