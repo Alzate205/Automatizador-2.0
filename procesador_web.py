@@ -1014,8 +1014,14 @@ async def registrar_cuenta(
             # Respaldo: el password del registro es el ÚLTIMO (el del login va primero).
             campo_pass = page.locator('input[formcontrolname="password"]').last
             campo_cnf = page.locator('input[formcontrolname="cnfPassword"]').last
-        await human_type(page, campo_pass, pwd)
-        await human_type(page, campo_cnf, pwd)
+        # La contraseña también es un PASO: si el campo está deshabilitado, es que
+        # un campo anterior no quedó válido. Detenemos con captura (que muestra el
+        # formulario y revela el campo culpable) en vez de seguir a un captcha
+        # fantasma con el formulario incompleto.
+        if not await human_type(page, campo_pass, pwd):
+            return await _abortar_paso(page, etq, "Contraseña (¿un campo anterior quedó inválido?)")
+        if not await human_type(page, campo_cnf, pwd):
+            return await _abortar_paso(page, etq, "Confirmar contraseña")
 
         # Interdicto / Ludopatía y PEP: a "No" (value 2) por defecto.
         await _seleccionar_opcion(page, 'select[formcontrolname="ludopath"]', "2", etq, textos=["No"])
