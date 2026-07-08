@@ -47,6 +47,13 @@ def test_detener_y_continuar_crean_senales(tmp_path, monkeypatch):
     assert os.path.exists(tmp_path / "senal_continuar.flag")
 
 
+def test_estaticos_no_cache(tmp_path, monkeypatch):
+    c = _client(tmp_path, monkeypatch)
+    r = c.get("/app.js")
+    assert r.status_code == 200
+    assert "no-store" in r.headers.get("cache-control", "")
+
+
 def test_cancelar_espera_crea_senal_y_desbloquea(tmp_path, monkeypatch):
     import control
     c = _client(tmp_path, monkeypatch)

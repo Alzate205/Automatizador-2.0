@@ -24,6 +24,24 @@ app = FastAPI(title="Automatizador Betplay — Dashboard")
 
 _STATIC = Path(__file__).parent / "static"
 
+
+class _EstaticosSinCache(StaticFiles):
+    """StaticFiles que pide al navegador NO cachear (app.js/index.html/style.css).
+
+    El panel se actualiza seguido; si el navegador guarda un app.js viejo, se ven
+    botones que no responden (p. ej. 'Cancelar' sin su manejador). Con no-store el
+    navegador siempre trae la versión fresca del disco; no hay que hacer Ctrl+F5."""
+
+    def is_not_modified(self, response_headers, request_headers) -> bool:
+        return False  # nunca 304: reenvía el archivo completo
+
+    async def get_response(self, path, scope):
+        resp = await super().get_response(path, scope)
+        resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        resp.headers["Pragma"] = "no-cache"
+        resp.headers["Expires"] = "0"
+        return resp
+
 # Handle del subproceso del bot (un solo run a la vez).
 estado_proc: dict = {"proc": None}
 
@@ -205,4 +223,4 @@ def api_resultados_exportar():
 
 # ---------------- Estáticos (al final para no tapar /api) ----------------
 
-app.mount("/", StaticFiles(directory=str(_STATIC), html=True), name="static")
+app.mount("/", _EstaticosSinCache(directory=str(_STATIC), html=True), name="static")
