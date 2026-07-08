@@ -200,6 +200,20 @@ async def _esperar_listo(page, selector, timeout_ms: int = 15000):
     return None  # visible pero nunca se habilitó (paso anterior incompleto)
 
 
+async def _mover_mouse_a(page, loc) -> None:
+    """Desliza el mouse (con pasos) hasta un punto dentro del elemento, sin hacer
+    clic. Da naturalidad: el cursor VIAJA hacia el campo en vez de teletransportarse,
+    y el clic cae exactamente donde debe (evita roces en campos vecinos)."""
+    try:
+        box = await loc.bounding_box()
+        if box:
+            x = box["x"] + box["width"] * random.uniform(0.35, 0.65)
+            y = box["y"] + box["height"] * random.uniform(0.35, 0.65)
+            await page.mouse.move(x, y, steps=random.randint(6, 14))
+    except ERRORES_PW:
+        pass
+
+
 async def human_type(page, selector, text, delay_range=(90, 240), reintentos: int = 2) -> bool:
     """
     Escribe el texto carácter a carácter con variabilidad humana (lento, para no
@@ -218,6 +232,8 @@ async def human_type(page, selector, text, delay_range=(90, 240), reintentos: in
             return False
         try:
             await loc.scroll_into_view_if_needed(timeout=3000)
+            await _mover_mouse_a(page, loc)
+            await human_delay(0.15, 0.45)
             await loc.click()
             await human_delay(0.4, 1.0)
             # str(text): tolera valores numéricos (Cédula/Teléfono leídos como int).
@@ -455,17 +471,50 @@ async def _seleccionar_opcion(page, selector: str, valor: str, etiqueta: str = "
         except ERRORES_PW:
             pass
 
-        # 1) <select> NATIVO: por value y por cada etiqueta.
-        for kw in [{"value": valor}] + [{"label": t} for t in textos]:
-            try:
-                await page.select_option(selector, **kw)
-                await human_delay(0.6, 1.4)
-                return True
-            except Exception:  # noqa: BLE001  (no es <select> nativo o value inexistente)
-                pass
-
-        # 2) PERSONALIZADO: abrir el control y hacer clic en la opción.
+        # ¿Es un <select> NATIVO? Muy importante: a un <select> nativo NUNCA hay que
+        # abrirlo con clic ni escanear un panel flotante (eso provoca el
+        # "selecciona-rápido-y-deselecciona" raro que se ve en pantalla). Se usa
+        # SOLO select_option. Para el custom (Angular/PrimeNG/ng-select) sí abrimos.
         try:
+            es_select_nativo = (await ctrl.evaluate("el => el.tagName")).lower() == "select"
+        except ERRORES_PW:
+            es_select_nativo = False
+
+        if es_select_nativo:
+            await _mover_mouse_a(page, ctrl)
+            # a) por value y por cada etiqueta (label).
+            for kw in [{"value": valor}] + [{"label": t} for t in textos]:
+                try:
+                    await ctrl.select_option(**kw)
+                    await human_delay(0.5, 1.2)
+                    return True
+                except Exception:  # noqa: BLE001  (value/label inexistente)
+                    pass
+            # b) escaneo de <option>: casa el texto visible y selecciona por su value.
+            #    (todo dentro del <select>, sin abrir nada en pantalla).
+            try:
+                opciones = await ctrl.evaluate(
+                    "el => Array.from(el.options).map(o => ({v: o.value, t: o.textContent}))"
+                )
+            except ERRORES_PW:
+                opciones = []
+            for o in opciones:
+                if _coincide_opcion(o.get("t", ""), objetivos):
+                    try:
+                        await ctrl.select_option(value=o.get("v"))
+                        await human_delay(0.5, 1.2)
+                        return True
+                    except Exception:  # noqa: BLE001
+                        pass
+            if intento < 2:
+                await human_delay(0.6, 1.2)
+                continue
+            logger.warning(f"[{etiqueta}] No se pudo seleccionar '{textos or valor}' en {selector}")
+            return False
+
+        # DESPLEGABLE PERSONALIZADO (no nativo): abrir el control y clic en la opción.
+        try:
+            await _mover_mouse_a(page, ctrl)
             await ctrl.click()
             await human_delay(0.5, 1.2)
         except ERRORES_PW:
@@ -474,7 +523,7 @@ async def _seleccionar_opcion(page, selector: str, valor: str, etiqueta: str = "
             page.get_by_role("option"),
             page.locator("mat-option, [role='option'], .mat-option, .p-dropdown-item, "
                          "ng-dropdown-panel .ng-option, .ng-option, ul.dropdown-menu li, "
-                         "li[role='option'], .select2-results__option, option"),
+                         "li[role='option'], .select2-results__option"),
         ]
         for loc in contenedores:
             try:
