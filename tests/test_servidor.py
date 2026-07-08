@@ -47,16 +47,27 @@ def test_detener_y_continuar_crean_senales(tmp_path, monkeypatch):
     assert os.path.exists(tmp_path / "senal_continuar.flag")
 
 
-def test_cancelar_espera_sin_proceso_limpia_estado(tmp_path, monkeypatch):
+def test_cancelar_espera_crea_senal_y_desbloquea(tmp_path, monkeypatch):
     import control
     c = _client(tmp_path, monkeypatch)
-    # Simula un estado viejo atascado en 'esperando_captcha' sin proceso vivo.
+    # Estado atascado en 'esperando_captcha' (el bot puede correr en OTRO proceso).
     control.escribir_estado(estado="esperando_captcha", fase="captcha", cuenta="x@y.com")
     r = c.post("/api/cancelar-espera")
     assert r.status_code == 200 and r.json()["ok"] is True
-    # Sin proceso vivo, el estado se desbloquea y la señal no queda colgada.
+    # La señal DEBE persistir para que el bot (aunque el servidor no lo haya lanzado)
+    # la consuma y aborte; se desbloquea el panel pasando el estado a inactivo.
+    assert control.hay_senal_cancelar() is True
     assert c.get("/api/estado").json()["estado"] == "inactivo"
-    assert control.hay_senal_cancelar() is False
+
+
+def test_cancelar_espera_no_toca_estado_si_no_esperaba(tmp_path, monkeypatch):
+    import control
+    c = _client(tmp_path, monkeypatch)
+    control.escribir_estado(estado="corriendo", fase="registro", cuenta="x@y.com")
+    c.post("/api/cancelar-espera")
+    # No estaba esperando: no forzamos inactivo (el bot maneja su propio estado).
+    assert c.get("/api/estado").json()["estado"] == "corriendo"
+    assert control.hay_senal_cancelar() is True
 
 
 def test_log_limpiar_trunca(tmp_path, monkeypatch):

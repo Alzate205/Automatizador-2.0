@@ -95,14 +95,23 @@ def api_continuar():
 
 @app.post("/api/cancelar-espera")
 def api_cancelar_espera():
-    """Cancela una espera de captcha/apuesta. Si el bot sigue vivo, crea la señal de
-    cancelación para que aborte la cuenta SIN enviar. Si NO hay proceso (estado viejo
-    atascado en 'esperando_captcha'), limpia el estado para desbloquear el panel."""
+    """Cancela una espera de captcha/apuesta/código.
+
+    Crea la señal senal_cancelar.flag que el BOT consume para abortar la cuenta SIN
+    enviar. NO la borramos aquí: la comunicación es por archivos justamente para que
+    funcione aunque el bot corra en OTRO proceso (p. ej. si se reinició el servidor y
+    perdió el handle del subproceso). Si la borráramos según `_bot_vivo()`, mataríamos
+    la señal antes de que el bot la lea y el botón "no haría nada".
+
+    Además desbloqueamos el panel: si el estado estaba en una espera, lo pasamos a
+    inactivo (el bot, si sigue vivo, escribirá luego su resultado real). Cualquier
+    señal que quede sin consumir se limpia en reset_control() al iniciar la próxima
+    corrida."""
     control.pedir_cancelar()
-    if not _bot_vivo():
-        control.limpiar_cancelar()
+    est = control.leer_estado()
+    if est.get("estado") in ("esperando_captcha", "esperando_apuesta", "esperando_codigo"):
         control.escribir_estado(estado="inactivo", fase="", cuenta="",
-                                mensaje="Espera cancelada (no había proceso activo)")
+                                mensaje="Espera cancelada por el usuario")
     return {"ok": True}
 
 

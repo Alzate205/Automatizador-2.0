@@ -241,7 +241,8 @@ async def _codigo_manual_waiter(etiqueta: str) -> str | None:
     log.warning(f"[{etiqueta}] Esperando el codigo 2FA manual desde el panel...")
     esperado = 0
     while not control.hay_codigo():
-        if control.hay_senal_detener():
+        if control.hay_senal_cancelar() or control.hay_senal_detener():
+            control.limpiar_cancelar()
             control.escribir_estado(estado="corriendo", fase="codigo_2fa", mensaje="Cancelado")
             return None
         await asyncio.sleep(2)
