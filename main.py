@@ -448,7 +448,272 @@ async def enviar_resumen_email(reporte: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# BUCLE PRINCIPAL
+# INTEGRACIÓN CON SCHEDULER (LOOP INFINITO)
+# ---------------------------------------------------------------------------
+
+async def procesar_lote_para_scheduler(config_ciclo) -> dict:
+    """
+    Callback para el scheduler: procesa un lote de cuentas y devuelve reporte.
+    
+    Este función envuelve la lógica de main() para que pueda ser llamada
+    repetidamente por el scheduler en modo loop infinito.
+    
+    config_ciclo: Objeto ConfigCiclo del scheduler con:
+        - cuentas_por_ciclo: cuántas cuentas procesar en este lote
+        - reiniciar_fallidas: si volver a intentar cuentas fallidas previas
+        - solo_exitosas_previas: si solo usar cuentas exitosas anteriores
+    
+    Devuelve dict con:
+        - cuentas_procesadas, cuentas_exitosas, cuentas_fallidas
+        - tasa_exito, bonos_activados, total_apostado
+        - errores_comunes: dict de error -> frecuencia
+    """
+    from identity_manager import IdentityManager
+    from retry_engine import RetryEngine
+    
+    _configurar_log_archivo()
+    
+    # Config de la corrida
+    cfg = control.leer_config()
+    global USAR_GESTOR_PERFILES, ROTAR_IP, CODIGO_MANUAL
+    USAR_GESTOR_PERFILES = bool(cfg.get("usar_gestor", USAR_GESTOR_PERFILES))
+    CODIGO_MANUAL = bool(cfg.get("codigo_manual", CODIGO_MANUAL))
+    pausa_min = float(cfg.get("pausa_min", PAUSA_MIN_MINUTOS))
+    pausa_max = float(cfg.get("pausa_max", PAUSA_MAX_MINUTOS))
+    filtro_modo = str(cfg.get("filtro_modo", "todo")).strip().lower()
+    tareas = set(cfg.get("tareas", ["apuesta_maxima", "bonos"]))
+    apuesta_cfg = cfg.get("apuesta", {"modo": "fijo", "valor": 0})
+    ROTAR_IP = bool(cfg.get("rotar_ip", ROTAR_IP))
+    
+    log.exito(f"[Scheduler Lote] Iniciando procesamiento de {config_ciclo.cuentas_por_ciclo} cuenta(s)")
+    inicializar_historial()
+    
+    # Cargar cuentas
+    fuente = EXCEL_OUTPUT if os.path.exists(EXCEL_OUTPUT) else EXCEL_INPUT
+    try:
+        df = leer_cuentas(fuente)
+        log.exito(f"Cargadas {len(df)} cuenta(s) de {fuente}")
+    except Exception as e:
+        log.error(f"No se pudo leer {fuente}: {e}")
+        return {
+            "cuentas_procesadas": 0,
+            "cuentas_exitosas": 0,
+            "cuentas_fallidas": 0,
+            "tasa_exito": 0.0,
+            "bonos_activados": 0,
+            "total_apostado": 0.0,
+            "errores_comunes": {"error_lectura_excel": 1},
+        }
+    
+    # Rotación automática de proxies
+    df = cargar_y_asignar_proxies(df)
+    
+    # Filtrar según configuración del scheduler
+    if config_ciclo.solo_exitosas_previas and os.path.exists(EXCEL_OUTPUT):
+        try:
+            df_exitosas = leer_cuentas(EXCEL_OUTPUT)
+            df_exitosas = df_exitosas[df_exitosas["Estado"].isin(["exitosa", "revisar"])]
+            emails_exitosas = set(df_exitosas["Correo"].dropna().tolist())
+            df = df[df["Correo"].isin(emails_exitosas)]
+            log.info(f"Filtradas a {len(df)} cuentas exitosas previas")
+        except Exception:
+            pass
+    
+    # Si hay reinicio de fallidas, priorizar cuentas con estado error/login_fallido
+    if config_ciclo.reiniciar_fallidas and os.path.exists(EXCEL_OUTPUT):
+        try:
+            df_completo = leer_cuentas(EXCEL_OUTPUT)
+            df_fallidas = df_completo[df_completo["Estado"].isin(["error", "login_fallido", "registro_rechazado"])]
+            if len(df_fallidas) > 0:
+                emails_fallidas = set(df_fallidas["Correo"].dropna().tolist())
+                df = df[df["Correo"].isin(emails_fallidas)]
+                log.info(f"Priorizando {len(df)} cuentas fallidas para reintentar")
+        except Exception:
+            pass
+    
+    # Limitar al número de cuentas por ciclo
+    max_cuentas = min(config_ciclo.cuentas_por_ciclo, len(df))
+    df = df.head(max_cuentas)
+    
+    log.info(f"Procesando {len(df)} cuenta(s) en este ciclo")
+    
+    # Inicializar gestores de identidad y reintentos
+    identity_mgr = IdentityManager()
+    retry_engine = RetryEngine(max_intentos=5)
+    
+    resumen: dict[str, int] = {}
+    errores_comunes: dict[str, int] = {}
+    cuentas_exitosas = 0
+    cuentas_fallidas = 0
+    bonos_activados = 0
+    total_apostado = 0.0
+    
+    control.escribir_estado(
+        estado="corriendo", indice=0, total=len(df), cuenta="",
+        fase="lote_scheduler", mensaje=f"Procesando lote de {len(df)} cuenta(s)",
+    )
+    
+    try:
+        for idx, row in df.iterrows():
+            # Parada solicitada desde el dashboard
+            if control.hay_senal_detener():
+                log.warning("Señal de detención recibida; parando lote.")
+                control.escribir_estado(estado="detenido", mensaje="Detenido por el usuario")
+                break
+            
+            email = row.get("Correo") or row.get("Usuario")
+            etiqueta = str(email) or f"fila_{idx}"
+            
+            control.escribir_estado(
+                estado="corriendo", indice=int(idx), total=len(df),
+                cuenta=str(email), fase="procesando", mensaje="Procesando cuenta",
+            )
+            
+            log.info("=" * 60)
+            log.info(f"Lote: Cuenta {idx + 1}/{len(df)} - {etiqueta}")
+            
+            # Obtener identidad única para esta cuenta
+            identidad = identity_mgr.obtener_identidad_unica()
+            log.info(f"Identidad asignada: MAC={identidad['mac']}, IP rotada={identidad['ip_rotada']}")
+            
+            # Intentar procesar con reintentos automáticos
+            resultado_final = None
+            intento = 0
+            
+            while intento < retry_engine.max_intentos:
+                try:
+                    # Rotar IP antes de cada intento
+                    if ROTAR_IP:
+                        log.info(f"[{etiqueta}] Rotando IP móvil (ADB) intento {intento + 1}...")
+                        await asyncio.to_thread(
+                            rotar_ip_seguro,
+                            ROTAR_IP_SEG_MIN,
+                            ROTAR_IP_SEG_MAX,
+                            None,
+                            None,
+                            ROTAR_IP_VERIFICAR,
+                        )
+                    
+                    # Procesar cuenta
+                    resultado = await procesar_fila(row, idx, tareas, apuesta_cfg)
+                    
+                    # Verificar si fue exitoso
+                    if resultado.get("estado") not in ("error", "login_fallido"):
+                        resultado_final = resultado
+                        break
+                    else:
+                        # Falló - registrar error y preparar reintento
+                        error_tipo = resultado.get("estado", "error_desconocido")
+                        errores_comunes[error_tipo] = errores_comunes.get(error_tipo, 0) + 1
+                        
+                        # Esperar backoff exponencial
+                        espera = retry_engine.calcular_backoff(intento)
+                        log.warning(f"[{etiqueta}] Falló ({error_tipo}). Reintentando en {espera}s... (intento {intento + 1}/{retry_engine.max_intentos})")
+                        await asyncio.sleep(espera)
+                        
+                        # Cambiar identidad para el próximo intento
+                        identidad = identity_mgr.obtener_identidad_unica()
+                        log.info(f"[{etiqueta}] Nueva identidad: MAC={identidad['mac']}")
+                        
+                        intento += 1
+                
+                except Exception as e:
+                    log.error(f"[{etiqueta}] Excepción en intento {intento + 1}: {e}")
+                    errores_comunes["excepcion"] = errores_comunes.get("excepcion", 0) + 1
+                    intento += 1
+            
+            # Si agotó todos los intentos
+            if resultado_final is None:
+                resultado_final = {
+                    "saldo": 0.0, "verificada": "error", "limitada": False,
+                    "bono": "Error bonos", "apuesta_bono": "n/a", "apuesta_saldo": "n/a",
+                    "registro": "n/a", "estado": "error",
+                    "mensaje": f"Agotados {retry_engine.max_intentos} intentos",
+                }
+                log.error(f"[{etiqueta}] Agotados todos los intentos. Marcada como fallida.")
+            
+            # Actualizar estadísticas
+            estado_cuenta = resultado_final.get("estado", "desconocido")
+            resumen[estado_cuenta] = resumen.get(estado_cuenta, 0) + 1
+            
+            if estado_cuenta in ("exitosa", "revisar"):
+                cuentas_exitosas += 1
+            else:
+                cuentas_fallidas += 1
+            
+            # Contar bonos activados
+            if resultado_final.get("bono") == "Tiene Bono" and resultado_final.get("apuesta_bono") != "n/a":
+                bonos_activados += 1
+            
+            # Sumar total apostado
+            saldo = resultado_final.get("saldo", 0.0)
+            if isinstance(saldo, (int, float)):
+                total_apostado += saldo
+            
+            # Guardar resultados en DataFrame
+            df.at[idx, "Saldo"] = resultado_final.get("saldo", 0.0)
+            df.at[idx, "Saldo_Retirable"] = resultado_final.get("saldo_retirable", 0.0)
+            df.at[idx, "Verificada"] = resultado_final.get("verificada", "desconocido")
+            df.at[idx, "Limitada"] = resultado_final.get("limitada", False)
+            df.at[idx, "Bono"] = resultado_final.get("bono", "")
+            df.at[idx, "Apuesta_Bono"] = resultado_final.get("apuesta_bono", "")
+            df.at[idx, "Apuesta_Saldo"] = resultado_final.get("apuesta_saldo", "")
+            df.at[idx, "Registro"] = resultado_final.get("registro", "n/a")
+            df.at[idx, "Estado"] = estado_cuenta
+            df.at[idx, "Ultima_Ejecucion"] = datetime.now()
+            df.at[idx, "Intentos_Realizados"] = intento + 1
+            
+            # Guardado incremental
+            df.to_excel(EXCEL_OUTPUT, index=False)
+            control.escribir_estado(resumen=resumen)
+            
+            log.info(
+                f"[{idx + 1}/{len(df)}] {email}  saldo=${resultado_final.get('saldo')}  "
+                f"bono={resultado_final.get('bono')}  ap_bono={resultado_final.get('apuesta_bono')}  "
+                f"ap_saldo={resultado_final.get('apuesta_saldo')}  estado={estado_cuenta}  "
+                f"intentos={intento + 1}"
+            )
+            
+            # Pausa humana entre cuentas
+            if idx < len(df) - 1 and not control.hay_senal_detener():
+                control.escribir_estado(fase="pausa", mensaje="Pausa anti-deteccion")
+                segundos = await pausa_humana(pausa_min, pausa_max)
+                log.info(f"Pausa anti-deteccion: {segundos / 60:.1f} min antes de la siguiente")
+    
+    except Exception as e:
+        log.error(f"Error inesperado en lote scheduler: {e}")
+        control.escribir_estado(estado="error", mensaje=str(e))
+        df.to_excel(EXCEL_OUTPUT, index=False)
+        errores_comunes["error_general"] = errores_comunes.get("error_general", 0) + 1
+    
+    # Guardado final
+    df.to_excel(EXCEL_OUTPUT, index=False)
+    
+    # Calcular tasa de éxito
+    total_procesadas = cuentas_exitosas + cuentas_fallidas
+    tasa_exito = (cuentas_exitosas / total_procesadas * 100) if total_procesadas > 0 else 0.0
+    
+    reporte_lote = {
+        "cuentas_procesadas": total_procesadas,
+        "cuentas_exitosas": cuentas_exitosas,
+        "cuentas_fallidas": cuentas_fallidas,
+        "tasa_exito": round(tasa_exito, 2),
+        "bonos_activados": bonos_activados,
+        "total_apostado": round(total_apostado, 2),
+        "errores_comunes": errores_comunes,
+    }
+    
+    log.exito(f"[Scheduler Lote] Completado: {reporte_lote}")
+    control.escribir_estado(
+        estado="finalizado", fase="fin_lote", mensaje="Lote completado",
+        resumen=reporte_lote,
+    )
+    
+    return reporte_lote
+
+
+# ---------------------------------------------------------------------------
+# BUCLE PRINCIPAL (MODO TRADICIONAL - UN SOLO PASO)
 # ---------------------------------------------------------------------------
 
 async def main() -> None:
