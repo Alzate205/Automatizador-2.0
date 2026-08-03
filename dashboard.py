@@ -543,7 +543,9 @@ def tab_que_hizo_hoy() -> None:
 
 def tab_loop_infinito() -> None:
     """Permite configurar y controlar el modo loop infinito del scheduler."""
-    st.subheader("🔄 Loop Infinito")
+    import scheduler_bridge
+    
+    st.subheader("Loop Infinito")
     st.caption("Configura ciclos automáticos de procesamiento con pausas entre ellos")
     
     # Leer configuración actual del scheduler
@@ -566,24 +568,24 @@ def tab_loop_infinito() -> None:
             "Cuentas por ciclo",
             min_value=1,
             max_value=100,
-            value=config_actual.get("cuentas_por_ciclo", 10),
+            value=int(config_actual.get("cuentas_por_ciclo", 10)),
             help="Número de cuentas a procesar en cada ciclo"
         )
         
         pausa_min_horas = c2.number_input(
             "Pausa mínima entre ciclos (horas)",
-            min_value=0.5,
+            min_value=0.1,
             max_value=24.0,
-            value=config_actual.get("pausa_min_horas", 4.0),
+            value=float(config_actual.get("pausa_min_horas", 6.0)),
             step=0.5,
             help="Tiempo mínimo de espera entre ciclos"
         )
         
         pausa_max_horas = c2.number_input(
             "Pausa máxima entre ciclos (horas)",
-            min_value=0.5,
+            min_value=0.1,
             max_value=24.0,
-            value=config_actual.get("pausa_max_horas", 8.0),
+            value=float(config_actual.get("pausa_max_horas", 8.0)),
             step=0.5,
             help="Tiempo máximo de espera entre ciclos (aleatorio)"
         )
@@ -592,25 +594,25 @@ def tab_loop_infinito() -> None:
             "Máximo de ciclos (0 = infinito)",
             min_value=0,
             max_value=1000,
-            value=config_actual.get("max_ciclos", 0),
+            value=int(config_actual.get("max_ciclos", 0)),
             help="0 significa que se ejecutará indefinidamente"
         )
         
         st.markdown("### Opciones Avanzadas")
         
-        auto_ajustar_pausa = st.checkbox(
-            "Ajustar pausa automáticamente según éxito",
-            value=config_actual.get("auto_ajustar_pausa", True),
-            help="Si hay muchos fallos, aumenta la pausa automáticamente"
+        reiniciar_fallidas = st.checkbox(
+            "Reintentar cuentas fallidas",
+            value=config_actual.get("reiniciar_fallidas", True),
+            help="Prioriza cuentas que fallaron en ciclos anteriores"
         )
         
-        notificar_fin_ciclo = st.checkbox(
-            "Notificar al finalizar cada ciclo",
-            value=config_actual.get("notificar_fin_ciclo", True),
-            help="Muestra alerta cuando termina un ciclo"
+        solo_exitosas_previas = st.checkbox(
+            "Solo cuentas exitosas previas",
+            value=config_actual.get("solo_exitosas_previas", False),
+            help="Si está marcado, solo procesa cuentas que ya fueron exitosas"
         )
         
-        enviado = st.form_submit_button("💾 Guardar Configuración", type="primary", use_container_width=True)
+        enviado = st.form_submit_button("Guardar Configuración", type="primary", use_container_width=True)
         
         if enviado:
             import json
@@ -619,59 +621,185 @@ def tab_loop_infinito() -> None:
                 "pausa_min_horas": float(pausa_min_horas),
                 "pausa_max_horas": float(pausa_max_horas),
                 "max_ciclos": int(max_ciclos),
-                "auto_ajustar_pausa": auto_ajustar_pausa,
-                "notificar_fin_ciclo": notificar_fin_ciclo,
+                "reiniciar_fallidas": reiniciar_fallidas,
+                "solo_exitosas_previas": solo_exitosas_previas,
                 "ultima_actualizacion": datetime.now().isoformat()
             }
             with open(config_path, "w", encoding="utf-8") as f:
                 json.dump(nueva_config, f, indent=2, ensure_ascii=False)
-            st.success("✅ Configuración guardada exitosamente")
+            st.success("Configuración guardada exitosamente")
     
     st.divider()
     
     # Estado actual del scheduler
     st.markdown("### Estado del Scheduler")
     
-    estado_scheduler = control.leer_estado()
+    # Obtener estado real del scheduler bridge
+    estado_scheduler = scheduler_bridge.obtener_estado_scheduler()
+    estado_formateado = scheduler_bridge.formatear_estado_para_dashboard(estado_scheduler)
     
     s1, s2, s3, s4 = st.columns(4)
     
-    ciclo_actual = estado_scheduler.get("ciclo_actual", 0)
-    total_ciclos = estado_scheduler.get("total_ciclos", max_ciclos if max_ciclos > 0 else "∞")
-    estado_loop = estado_scheduler.get("estado_loop", "inactivo")
-    proximo_ciclo = estado_scheduler.get("proximo_ciclo", "No programado")
+    s1.metric(
+        "Estado",
+        estado_formateado["estado_texto"],
+        delta=None
+    )
+    s2.metric(
+        "Ciclo Actual",
+        estado_formateado["ciclo_actual"]
+    )
+    s3.metric(
+        "Ciclos Completados",
+        estado_formateado["total_ciclos"]
+    )
     
-    s1.metric("Ciclo Actual", f"{ciclo_actual}")
-    s2.metric("Total Ciclos", str(total_ciclos))
-    s3.metric("Estado Loop", estado_loop)
-    s4.metric("Próximo Ciclo", proximo_ciclo if proximo_ciclo else "No programado")
+    # Mostrar configuración resumida
+    s4.metric(
+        "Cuentas/Ciclo",
+        str(estado_scheduler.get("config", {}).get("cuentas_por_ciclo", "N/A"))
+    )
+    
+    # Mostrar configuración completa en expander
+    with st.expander("Ver configuración detallada"):
+        st.code(estado_formateado["configuracion"])
     
     # Botones de control
     col_btn1, col_btn2, col_btn3 = st.columns(3)
     
+    scheduler_corriendo = scheduler_bridge.esta_corriendo()
+    
     with col_btn1:
-        if st.button("▶️ Iniciar Loop", type="primary", use_container_width=True, disabled=estado_loop == "activo"):
-            # Aquí se enviaría la señal al scheduler
-            st.success("Loop iniciado - El scheduler comenzará pronto")
+        btn_iniciar = st.button(
+            "Iniciar Loop",
+            type="primary",
+            use_container_width=True,
+            disabled=scheduler_corriendo
+        )
+        if btn_iniciar:
+            # Leer configuración
+            config = config_actual or {
+                "cuentas_por_ciclo": 10,
+                "pausa_min_horas": 6.0,
+                "pausa_max_horas": 8.0,
+                "max_ciclos": 0,
+                "reiniciar_fallidas": True,
+                "solo_exitosas_previas": False
+            }
+            
+            # Convertir horas a minutos para el scheduler
+            exito = scheduler_bridge.iniciar_scheduler(
+                cuentas_por_ciclo=config.get("cuentas_por_ciclo", 10),
+                pausa_min_minutos=config.get("pausa_min_horas", 6.0) * 60,
+                pausa_max_minutos=config.get("pausa_max_horas", 8.0) * 60,
+                max_ciclos=config.get("max_ciclos", 0),
+                reiniciar_fallidas=config.get("reiniciar_fallidas", True),
+                solo_exitosas_previas=config.get("solo_exitosas_previas", False)
+            )
+            
+            if exito:
+                st.success("Scheduler iniciado correctamente")
+                st.rerun()
+            else:
+                st.error("No se pudo iniciar el scheduler")
     
     with col_btn2:
-        if st.button("⏸️ Pausar Loop", type="warning", use_container_width=True, disabled=estado_loop != "activo"):
-            st.warning("Loop pausado - Se reanudará en el próximo ciclo")
+        btn_pausar = st.button(
+            "Pausar Loop",
+            type="warning",
+            use_container_width=True,
+            disabled=not scheduler_corriendo
+        )
+        if btn_pausar:
+            scheduler_bridge.pausar_scheduler()
+            st.warning("Solicitada pausa del scheduler")
+            st.rerun()
     
     with col_btn3:
-        if st.button("⏹️ Detener Loop", type="error", use_container_width=True, disabled=estado_loop == "inactivo"):
-            st.error("Loop detenido - Se requiere reinicio manual")
+        btn_detener = st.button(
+            "Detener Loop",
+            type="error",
+            use_container_width=True,
+            disabled=not scheduler_corriendo
+        )
+        if btn_detener:
+            scheduler_bridge.detener_scheduler()
+            st.error("Solicitada detención del scheduler")
+            st.rerun()
+    
+    # Si hay botón de reanudar (cuando está pausado)
+    if estado_scheduler.get("estado") == "pausado":
+        col_btn4 = st.columns(1)[0]
+        with col_btn4:
+            btn_reanudar = st.button(
+                "Reanudar Loop",
+                type="success",
+                use_container_width=True
+            )
+            if btn_reanudar:
+                scheduler_bridge.reanudar_scheduler()
+                st.success("Scheduler reanudado")
+                st.rerun()
     
     # Progreso del ciclo actual
-    if ciclo_actual > 0:
-        st.markdown("### Progreso del Ciclo Actual")
+    if scheduler_corriendo and estado_scheduler.get("ultimo_reporte"):
+        st.divider()
+        st.markdown("### Último Reporte del Ciclo")
         
-        progreso = estado_scheduler.get("progreso_ciclo", 0)
-        st.progress(progreso / 100)
+        ultimo_reporte = estado_scheduler.get("ultimo_reporte", {})
         
-        col_prog1, col_prog2 = st.columns(2)
-        col_prog1.metric("Cuentas Procesadas", estado_scheduler.get("cuentas_procesadas", 0))
-        col_prog2.metric("Cuentas Restantes", estado_scheduler.get("cuentas_restantes", 0))
+        rep_col1, rep_col2, rep_col3, rep_col4 = st.columns(4)
+        
+        rep_col1.metric(
+            "Cuentas Procesadas",
+            str(ultimo_reporte.get("cuentas_procesadas", 0))
+        )
+        rep_col2.metric(
+            "Exitosas",
+            str(ultimo_reporte.get("cuentas_exitosas", 0)),
+            delta=f"{ultimo_reporte.get('tasa_exito_porcentaje', 0):.1f}%"
+        )
+        rep_col3.metric(
+            "Bonos Activados",
+            str(ultimo_reporte.get("bonos_activados", 0))
+        )
+        rep_col4.metric(
+            "Total Apostado",
+            f"${ultimo_reporte.get('total_apostado', 0):,.2f}"
+        )
+        
+        # Mostrar errores comunes si los hay
+        errores_comunes = ultimo_reporte.get("errores_comunes", {})
+        if errores_comunes:
+            with st.expander(f"Errores comunes ({sum(errores_comunes.values())} total)"):
+                for error, cantidad in errores_comunes.items():
+                    st.write(f"- **{error}**: {cantidad}")
+    
+    # Estadísticas globales
+    if estado_scheduler.get("estadisticas_globales"):
+        st.divider()
+        st.markdown("### Estadísticas Globales Acumuladas")
+        
+        stats = estado_scheduler.get("estadisticas_globales", {})
+        
+        stat_col1, stat_col2, stat_col3, stat_col4 = st.columns(4)
+        
+        stat_col1.metric(
+            "Total Ciclos",
+            str(stats.get("ciclos_completados", 0))
+        )
+        stat_col2.metric(
+            "Total Cuentas",
+            str(stats.get("total_cuentas_procesadas", 0))
+        )
+        stat_col3.metric(
+            "Tasa Éxito Global",
+            f"{stats.get('tasa_exito_global', 0):.1f}%"
+        )
+        stat_col4.metric(
+            "Tiempo Total",
+            f"{stats.get('tiempo_total_horas', 0):.1f} hrs"
+        )
 
 
 # ---------------------------------------------------------------------------
