@@ -375,8 +375,12 @@ async def procesar_fila(row, perfil_id: int, tareas: set, apuesta_cfg: dict) -> 
             f"ApSaldo: {resultado.get('apuesta_saldo', 'n/a')} | Puerto: {puerto}"
         ),
         saldo=resultado.get("saldo", 0.0),
+        saldo_retirable=resultado.get("saldo_retirable", 0.0),
         verificada=resultado.get("verificada", "desconocido"),
         limitada=resultado.get("limitada", False),
+        bono=resultado.get("bono", "n/a"),
+        apuesta_bono=resultado.get("apuesta_bono", "n/a"),
+        apuesta_saldo=resultado.get("apuesta_saldo", "n/a"),
     )
     return resultado
 

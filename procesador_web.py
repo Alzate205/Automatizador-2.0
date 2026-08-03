@@ -1493,13 +1493,13 @@ async def process_user(
                     bono = await verificar_bonos(page, base_url, etiqueta)
                 if bono == "Tiene Bono":
                     monto = _calcular_monto(apuesta_cfg, info["saldo"])
-                    apuesta_bono = await apostar(page, base_url, etiqueta, monto, confirmar_waiter, "bono")
+                    apuesta_bono = await apostar(page, base_url, etiqueta, monto, confirmar_waiter, "bono", auto_confirmar=True)
                 else:
                     logger.info(f"[{etiqueta}] Sin bono activo; se omite apostar el bono.")
                     apuesta_bono = "sin_bono"
             if "apostar_saldo" in seleccion:
                 monto = _calcular_monto(apuesta_cfg, info["saldo"])
-                apuesta_saldo = await apostar(page, base_url, etiqueta, monto, confirmar_waiter, "saldo")
+                apuesta_saldo = await apostar(page, base_url, etiqueta, monto, confirmar_waiter, "saldo", auto_confirmar=True)
 
             return {
                 "saldo": info["saldo"],
@@ -1959,14 +1959,16 @@ async def apostar(
     monto: float,
     confirmar_waiter: Optional[Callable[..., Awaitable[None]]] = None,
     tipo: str = "saldo",
+    auto_confirmar: bool = True,  # NUEVO: por defecto apuesta solo
 ) -> str:
     """
-    Prepara una apuesta (Deportes → cuota → monto en el cupón) y PAUSA para que el
-    usuario dé el clic final de 'Apostar'. No confirma la apuesta por su cuenta.
+    Prepara una apuesta (Deportes → cuota → monto en el cupón) y la CONFIRMA
+    automáticamente si auto_confirmar=True (por defecto). Si auto_confirmar=False,
+    pausa para que el usuario dé el clic final de 'Apostar'.
 
     Para tipo="bono" busca una cuota 3.0-6.0 (RANGO_CUOTA_BONO); para tipo="saldo"
-    toma la primera disponible. Devuelve una descripción ('preparada: <detalle>')
-    o un estado: 'sin_monto', 'sin_cuota' o 'error'.
+    toma la primera disponible. Devuelve una descripción ('confirmada: <detalle>')
+    o un estado: 'sin_monto', 'sin_cuota', 'error' o 'cancelada'.
     """
     if not monto or monto <= 0:
         logger.warning(f"[{etiqueta}] Apostar {tipo}: monto invalido ({monto}); se omite.")
@@ -1992,16 +1994,54 @@ async def apostar(
         if not await _escribir_monto_betslip(page, etiqueta, monto):
             return "sin_monto"
 
-        # Preparar y pausar: el usuario confirma manualmente (mismo mecanismo del CAPTCHA).
-        logger.warning(
-            f"[{etiqueta}] Apuesta {tipo} PREPARADA: {detalle} por {monto:,.0f}. "
-            "Revisa y confirma a mano."
-        )
-        if confirmar_waiter is not None:
-            if await confirmar_waiter("apuesta") is False:
-                logger.warning(f"[{etiqueta}] Confirmacion de apuesta cancelada por el usuario.")
-                return "cancelada"
-        return f"preparada: {detalle}"
+        # Buscar botón de confirmar apuesta
+        btn_apostar = page.locator('button:has-text("Apostar"), input[type="submit"][value="Apostar"], button.apostar').first
+        
+        if auto_confirmar:
+            # MODO AUTOMÁTICO: confirma la apuesta sin intervención humana
+            logger.info(f"[{etiqueta}] Apuesta {tipo} PREPARADA: {detalle} por {monto:,.0f}. Confirmando automáticamente...")
+            
+            # Comportamiento humano antes de confirmar
+            await human_delay(2, 4)
+            await _mover_mouse_humano(page, random.randint(400, 900), random.randint(300, 500))
+            await human_delay(1, 2)
+            
+            try:
+                # Hacer scroll hasta el botón si es necesario
+                await btn_apostar.scroll_into_view_if_needed(timeout=5000)
+                await human_delay(0.5, 1.5)
+                
+                # Confirmar apuesta con comportamiento humano
+                await btn_apostar.click(timeout=8000)
+                logger.info(f"[{etiqueta}] ✅ APUESTA {tipo.upper()} CONFIRMADA: {detalle} por ${monto:,.0f}")
+                
+                # Esperar confirmación del sitio
+                await human_delay(3, 6)
+                
+                # Verificar que la apuesta fue registrada
+                try:
+                    msg_exito = page.locator('.alert-success, .toast-success, [class*="success"], text=Apuesta exitosa').first
+                    await msg_exito.wait_for(state="visible", timeout=5000)
+                    logger.info(f"[{etiqueta}] Apuesta confirmada exitosamente por el sitio")
+                except ERRORES_PW:
+                    logger.debug(f"[{etiqueta}] No se encontró mensaje de éxito explícito, pero se envió la apuesta")
+                
+                return f"confirmada: {detalle}"
+                
+            except ERRORES_PW as e:
+                logger.error(f"[{etiqueta}] Error al confirmar apuesta: {e}")
+                return "error_confirmacion"
+        else:
+            # MODO MANUAL: pausar y esperar confirmación del usuario (comportamiento anterior)
+            logger.warning(
+                f"[{etiqueta}] Apuesta {tipo} PREPARADA: {detalle} por {monto:,.0f}. "
+                "Revisa y confirma a mano."
+            )
+            if confirmar_waiter is not None:
+                if await confirmar_waiter("apuesta") is False:
+                    logger.warning(f"[{etiqueta}] Confirmacion de apuesta cancelada por el usuario.")
+                    return "cancelada"
+            return f"preparada: {detalle}"
     except ERRORES_PW as e:
         logger.warning(f"[{etiqueta}] No se pudo preparar la apuesta {tipo}: {e}")
         return "error"

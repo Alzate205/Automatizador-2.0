@@ -179,9 +179,10 @@ log = configurar_logger()
 # ---------------------------------------------------------------------------
 
 # Las 4 primeras columnas se conservan por compatibilidad con probar_local.py;
-# las 3 últimas guardan el resultado detallado de la auditoría.
+# las últimas guardan el resultado detallado de la auditoría incluyendo apuestas.
 ENCABEZADO_HISTORIAL = [
-    "Hora", "Usuario", "Estado", "Detalle", "Saldo", "Verificada", "Limitada",
+    "Hora", "Usuario", "Estado", "Detalle", "Saldo", "Saldo_Retirable", 
+    "Verificada", "Limitada", "Bono", "Apuesta_Bono", "Apuesta_Saldo",
 ]
 
 
@@ -197,21 +198,26 @@ def registrar_historial(
     estado: str,
     detalle: str = "",
     saldo: object = "",
+    saldo_retirable: object = "",
     verificada: object = "",
     limitada: object = "",
+    bono: object = "",
+    apuesta_bono: object = "",
+    apuesta_saldo: object = "",
     ruta: str = ARCHIVO_HISTORIAL,
 ) -> None:
     """
     Agrega una fila al historial de auditoría.
 
     Firma compatible hacia atrás: (usuario, estado, detalle) siguen siendo los
-    tres primeros argumentos posicionales. Los campos saldo/verificada/limitada
-    son opcionales y registran el resultado detallado de cada cuenta.
+    tres primeros argumentos posicionales. Los campos restantes son opcionales
+    y registran el resultado detallado de cada cuenta incluyendo apuestas.
     """
     hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with open(ruta, mode="a", newline="", encoding="utf-8") as f:
         csv.writer(f).writerow(
-            [hora, usuario, estado, detalle, saldo, verificada, limitada]
+            [hora, usuario, estado, detalle, saldo, saldo_retirable, 
+             verificada, limitada, bono, apuesta_bono, apuesta_saldo]
         )
 
 

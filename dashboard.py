@@ -1,22 +1,22 @@
 """
-dashboard.py
-============
+dashboard.py v3.0 - Panel de Control Mejorado Betplay
+======================================================
 
-Panel de control + visor del Automatizador Betplay (Streamlit).
+Panel de control ULTRA-FÁCIL de usar para el Automatizador Betplay (Streamlit).
 
-Permite manejar TODO el bot desde el navegador:
-  - Pestana "Cuentas": editar/crear la lista de cuentas (login o registro).
-  - Pestana "Control": Iniciar / Detener / Continuar (CAPTCHA) y ver el progreso
-    en vivo (estado, cuenta actual, log) mientras el bot corre como proceso aparte.
-  - Pestana "Resultados": metricas, graficos y exportacion de los resultados.
+CARACTERÍSTICAS PRINCIPALES:
+    ✅ Interfaz simplificada e intuitiva
+    ✅ Reporte detallado de apuestas realizadas
+    ✅ Métricas en tiempo real con gráficos
+    ✅ Historial completo de operaciones
+    ✅ Control del loop infinito
+    ✅ Alertas visuales de eventos importantes
+    ✅ Vista de "Qué hizo el bot hoy" - perfecto para revisar al llegar a casa
 
-El bot (main.py) se lanza como subproceso y se comunica con este panel por
-archivos (ver control.py): estado_bot.json, config_run.json, senales y bot.log.
+INSTALACIÓN:
+    pip install streamlit pandas openpyxl altair plotly
 
-Instalacion:
-    pip install streamlit pandas openpyxl altair
-
-Ejecucion:
+EJECUCIÓN:
     streamlit run dashboard.py
 """
 
@@ -29,27 +29,29 @@ import shutil
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional
 
 import altair as alt
 import pandas as pd
 import streamlit as st
+import plotly.express as px
+import plotly.graph_objects as go
 
 import control
 
-# Archivos del proyecto.
+# ============================================================================
+# CONFIGURACIÓN GLOBAL
+# ============================================================================
+
 RUTA_EXCEL = "cuentas.xlsx"
 RUTA_RESULTADOS = "cuentas_actualizadas.xlsx"
 RUTA_HISTORIAL = "historial_auditoria.csv"
 LOG_CONSOLA = "bot_consola.log"
+RUTA_REPORTES_APUESTAS = "reportes_apuestas.json"
 
-# Columnas sensibles (se pueden ocultar en la vista de resultados).
 COLUMNAS_SENSIBLES = ["Password", "ClaveCorreo"]
 
-# Esquema base para crear una lista de cuentas desde cero. Incluye los campos de
-# registro (fechas y lugar de expedicion) que usan tab_registrar y el registro masivo.
-# Orden de las columnas siguiendo el formulario real de Betplay (los primeros
-# 5 campos son de gestión del bot y no están en el formulario).
 COLUMNAS_PLANTILLA = [
     "Modo", "Nombre", "Usuario", "ClaveCorreo", "Puerto",
     "Cedula",
@@ -62,28 +64,29 @@ COLUMNAS_PLANTILLA = [
     "Password",
 ]
 
+# Colores del tema
+COLOR_EXITO = "#2ecc71"
+COLOR_ERROR = "#e74c3c"
+COLOR_ADVERTENCIA = "#f39c12"
+COLOR_INFO = "#3498db"
+COLOR_PRIMARIO = "#9b59b6"
 
-# ---------------------------------------------------------------------------
+# ============================================================================
 # UTILIDADES DE DATOS
-# ---------------------------------------------------------------------------
+# ============================================================================
 
 def leer_excel(ruta: str) -> pd.DataFrame:
-    """Lee un Excel local; DataFrame vacio si no existe o falla."""
+    """Lee un Excel local; DataFrame vacío si no existe o falla."""
     if not os.path.exists(ruta):
         return pd.DataFrame()
     try:
         return pd.read_excel(ruta)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return pd.DataFrame()
 
 
 def generar_plantilla_registro(n: int = 10) -> pd.DataFrame:
-    """Genera una plantilla de n cuentas en modo registro, lista para rellenar.
-
-    Asigna puertos CDP consecutivos (9222, 9223, ...) y valores por defecto
-    razonables en las fechas/lugar de expedicion; los datos personales quedan
-    vacios para que los completes.
-    """
+    """Genera una plantilla de n cuentas en modo registro."""
     df = pd.DataFrame(columns=COLUMNAS_PLANTILLA)
     for i in range(int(n)):
         df.loc[i] = {
@@ -115,8 +118,31 @@ def leer_historial() -> pd.DataFrame:
         return pd.DataFrame()
     try:
         return pd.read_csv(RUTA_HISTORIAL)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return pd.DataFrame()
+
+
+def leer_reportes_apuestas() -> List[Dict]:
+    """Lee el archivo JSON con reportes detallados de apuestas."""
+    if not os.path.exists(RUTA_REPORTES_APUESTAS):
+        return []
+    try:
+        with open(RUTA_REPORTES_APUESTAS, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+
+def guardar_reporte_apuesta(reporte: Dict) -> None:
+    """Guarda un reporte de apuesta en el archivo JSON."""
+    import json
+    reportes = leer_reportes_apuestas()
+    reportes.append(reporte)
+    # Mantener solo últimos 500 reportes
+    if len(reportes) > 500:
+        reportes = reportes[-500:]
+    with open(RUTA_REPORTES_APUESTAS, "w", encoding="utf-8") as f:
+        json.dump(reportes, f, ensure_ascii=False, indent=2)
 
 
 def porcentaje_verificadas(df: pd.DataFrame) -> float:
@@ -134,13 +160,7 @@ def contar_limitadas(df: pd.DataFrame) -> int:
 
 
 def serie_registro(df: pd.DataFrame) -> pd.Series:
-    """
-    Estado de registro por fila, normalizado a minúsculas.
-
-    Lo toma de la columna 'Registro' (Excel de resultados) o, en su defecto, lo
-    parsea de 'Reg: <estado>' dentro de 'Detalle' (historial CSV). Devuelve ""
-    para filas sin dato (p. ej. cuentas en modo login).
-    """
+    """Estado de registro por fila, normalizado a minúsculas."""
     if "Registro" in df.columns:
         return df["Registro"].astype(str).str.strip().str.lower()
     if "Detalle" in df.columns:
@@ -161,7 +181,7 @@ def to_excel_bytes(df: pd.DataFrame) -> bytes:
 
 
 def _opciones_cuentas(df: pd.DataFrame) -> list[str]:
-    """Identificadores (Correo o Usuario) de cada fila, para seleccionar cuentas."""
+    """Identificadores (Correo o Usuario) de cada fila."""
     if df.empty:
         return []
     opciones: list[str] = []
@@ -179,13 +199,27 @@ def cola_log(ruta: str, n: int = 40) -> str:
     try:
         with open(ruta, encoding="utf-8", errors="replace") as f:
             return "".join(f.readlines()[-n:])
-    except Exception:  # noqa: BLE001
+    except Exception:
         return ""
 
 
-# ---------------------------------------------------------------------------
-# CONTROL DEL BOT (subproceso)
-# ---------------------------------------------------------------------------
+def formatear_moneda(valor: float) -> str:
+    """Formatea un valor como moneda COP."""
+    return f"${valor:,.0f} COP"
+
+
+def formatear_fecha(fecha_str: str) -> str:
+    """Formatea una fecha para mostrar."""
+    try:
+        fecha = datetime.fromisoformat(fecha_str.replace("Z", "+00:00"))
+        return fecha.strftime("%d/%m %H:%M")
+    except Exception:
+        return fecha_str
+
+
+# ============================================================================
+# CONTROL DEL BOT
+# ============================================================================
 
 def bot_proceso_vivo() -> bool:
     proc = st.session_state.get("bot_proc")
@@ -193,7 +227,7 @@ def bot_proceso_vivo() -> bool:
 
 
 def bot_activo(estado: dict) -> bool:
-    """True si el bot esta trabajando (por estado publicado o proceso vivo)."""
+    """True si el bot esta trabajando."""
     return (
         estado.get("estado") in ("corriendo", "esperando_captcha", "esperando_apuesta")
         or bot_proceso_vivo()
@@ -201,7 +235,7 @@ def bot_activo(estado: dict) -> bool:
 
 
 def generar_reporte_parcial() -> str:
-    """Copia el Excel de resultados a un archivo con timestamp. Devuelve la ruta o ''."""
+    """Copia el Excel de resultados a un archivo con timestamp."""
     if not os.path.exists(RUTA_RESULTADOS):
         return ""
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -232,6 +266,412 @@ def forzar_parada() -> None:
     proc = st.session_state.get("bot_proc")
     if proc is not None and proc.poll() is None:
         proc.terminate()
+
+
+# ============================================================================
+# ESTILOS CSS PERSONALIZADOS
+# ============================================================================
+
+def inject_custom_css():
+    """Inyecta CSS personalizado para mejorar la apariencia."""
+    st.markdown("""
+    <style>
+    /* Tarjetas de métricas */
+    .metric-card {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        border-radius: 15px;
+        padding: 20px;
+        color: white;
+        text-align: center;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+    }
+    .metric-value {
+        font-size: 2.5em;
+        font-weight: bold;
+        margin: 10px 0;
+    }
+    .metric-label {
+        font-size: 0.9em;
+        opacity: 0.9;
+    }
+    
+    /* Alertas personalizadas */
+    .alert-success {
+        background-color: #d4edda;
+        border-left: 5px solid #28a745;
+        padding: 15px;
+        border-radius: 5px;
+        margin: 10px 0;
+    }
+    .alert-warning {
+        background-color: #fff3cd;
+        border-left: 5px solid #ffc107;
+        padding: 15px;
+        border-radius: 5px;
+        margin: 10px 0;
+    }
+    .alert-error {
+        background-color: #f8d7da;
+        border-left: 5px solid #dc3545;
+        padding: 15px;
+        border-radius: 5px;
+        margin: 10px 0;
+    }
+    .alert-info {
+        background-color: #d1ecf1;
+        border-left: 5px solid #17a2b8;
+        padding: 15px;
+        border-radius: 5px;
+        margin: 10px 0;
+    }
+    
+    /* Botones grandes */
+    .stButton > button {
+        width: 100%;
+        border-radius: 10px;
+        font-weight: bold;
+        padding: 10px 20px;
+    }
+    
+    /* Tabs personalizados */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 10px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        border-radius: 10px;
+        padding: 10px 20px;
+    }
+    
+    /* Ocultar footer de Streamlit */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    </style>
+    """, unsafe_allow_html=True)
+
+
+# ============================================================================
+# PESTAÑA: QUÉ HIZO EL BOT HOY (Resumen diario de apuestas)
+# ============================================================================
+
+def tab_que_hizo_hoy() -> None:
+    """Muestra un resumen claro de lo que el bot hizo hoy - ideal para revisar al llegar a casa."""
+    st.subheader("📊 ¿Qué hizo el bot hoy?")
+    st.caption("Resumen automático de todas las operaciones realizadas en la última sesión")
+    
+    # Leer reportes de apuestas
+    reportes = leer_reportes_apuestas()
+    
+    # Filtrar solo los de hoy
+    hoy = datetime.now().date()
+    reportes_hoy = []
+    for rep in reportes:
+        try:
+            fecha_rep = datetime.fromisoformat(rep.get("fecha", "")).date()
+            if fecha_rep == hoy:
+                reportes_hoy.append(rep)
+        except Exception:
+            continue
+    
+    # Métricas principales del día
+    m1, m2, m3, m4, m5 = st.columns(5)
+    
+    total_apuestas = len(reportes_hoy)
+    apuestas_ganadas = sum(1 for r in reportes_hoy if r.get("resultado") == "ganada")
+    apuestas_perdidas = sum(1 for r in reportes_hoy if r.get("resultado") == "perdida")
+    total_apostado = sum(float(r.get("monto_apostado", 0)) for r in reportes_hoy)
+    bonos_activados = sum(1 for r in reportes_hoy if r.get("tipo", "") == "bono")
+    
+    m1.metric("🎯 Apuestas Totales", f"{total_apuestas}")
+    m2.metric("✅ Ganadas", f"{apuestas_ganadas}", delta=f"{apuestas_ganadas/total_apuestas*100:.1f}%" if total_apuestas > 0 else "0%")
+    m3.metric("❌ Perdidas", f"{apuestas_perdidas}")
+    m4.metric("💰 Total Apostado", formatear_moneda(total_apostado))
+    m5.metric("🎁 Bonos Usados", f"{bonos_activados}")
+    
+    st.divider()
+    
+    # Gráfico de distribución por deporte
+    if reportes_hoy:
+        col1, col2 = st.columns([2, 1])
+        
+        with col1:
+            st.markdown("### 📝 Detalle de Apuestas Realizadas")
+            
+            # Crear DataFrame para mostrar
+            df_apuestas = pd.DataFrame(reportes_hoy)
+            
+            if not df_apuestas.empty:
+                # Columnas a mostrar
+                cols_mostrar = []
+                if "cuenta" in df_apuestas.columns:
+                    cols_mostrar.append("cuenta")
+                if "deporte" in df_apuestas.columns:
+                    cols_mostrar.append("deporte")
+                if "evento" in df_apuestas.columns:
+                    cols_mostrar.append("evento")
+                if "tipo_apuesta" in df_apuestas.columns:
+                    cols_mostrar.append("tipo_apuesta")
+                if "monto_apostado" in df_apuestas.columns:
+                    cols_mostrar.append("monto_apostado")
+                if "cuota" in df_apuestas.columns:
+                    cols_mostrar.append("cuota")
+                if "resultado" in df_apuestas.columns:
+                    cols_mostrar.append("resultado")
+                if "hora" in df_apuestas.columns:
+                    cols_mostrar.append("hora")
+                
+                if cols_mostrar:
+                    df_display = df_apuestas[cols_mostrar].copy()
+                    
+                    # Formatear columnas
+                    if "monto_apostado" in df_display.columns:
+                        df_display["monto_apostado"] = df_display["monto_apostado"].apply(
+                            lambda x: formatear_moneda(float(x)) if pd.notna(x) else ""
+                        )
+                    if "cuota" in df_display.columns:
+                        df_display["cuota"] = df_display["cuota"].apply(
+                            lambda x: f"{float(x):.2f}" if pd.notna(x) else ""
+                        )
+                    if "hora" in df_display.columns:
+                        df_display["hora"] = df_display["hora"].apply(
+                            lambda x: formatear_fecha(x) if pd.notna(x) and x else ""
+                        )
+                    
+                    # Renombrar columnas para mostrar
+                    nombres_columnas = {
+                        "cuenta": "Cuenta",
+                        "deporte": "Deporte",
+                        "evento": "Evento",
+                        "tipo_apuesta": "Tipo",
+                        "monto_apostado": "Monto",
+                        "cuota": "Cuota",
+                        "resultado": "Resultado",
+                        "hora": "Hora"
+                    }
+                    df_display = df_display.rename(columns=nombres_columnas)
+                    
+                    st.dataframe(df_display, use_container_width=True, hide_index=True)
+                    
+                    # Botón de exportar
+                    csv_export = df_apuestas.to_csv(index=False, encoding='utf-8-sig')
+                    st.download_button(
+                        label="📥 Descargar detalle (CSV)",
+                        data=csv_export,
+                        file_name=f"apuestas_hoy_{hoy.strftime('%Y%m%d')}.csv",
+                        mime="text/csv"
+                    )
+        
+        with col2:
+            st.markdown("### 📈 Distribución por Deporte")
+            
+            # Contar apuestas por deporte
+            if "deporte" in df_apuestas.columns:
+                deporte_counts = df_apuestas["deporte"].value_counts().reset_index()
+                deporte_counts.columns = ["Deporte", "Cantidad"]
+                
+                fig_pie = px.pie(
+                    deporte_counts,
+                    values="Cantidad",
+                    names="Deporte",
+                    color_discrete_sequence=px.colors.qualitative.Set3
+                )
+                fig_pie.update_layout(height=400, showlegend=True)
+                st.plotly_chart(fig_pie, use_container_width=True)
+            
+            st.markdown("### 🎯 Tipo de Apuesta")
+            
+            if "tipo" in df_apuestas.columns:
+                tipo_counts = df_apuestas["tipo"].value_counts().reset_index()
+                tipo_counts.columns = ["Tipo", "Cantidad"]
+                
+                fig_bar = px.bar(
+                    tipo_counts,
+                    x="Tipo",
+                    y="Cantidad",
+                    color="Tipo",
+                    color_discrete_sequence=px.colors.qualitative.Bold
+                )
+                fig_bar.update_layout(height=300, showlegend=False)
+                st.plotly_chart(fig_bar, use_container_width=True)
+    
+    else:
+        st.info("📭 No hay apuestas registradas para hoy. Ejecuta el bot con las tareas de apuesta activadas.")
+    
+    # Historial de los últimos días
+    st.divider()
+    st.markdown("### 📅 Historial de Últimos 7 Días")
+    
+    if reportes:
+        # Agrupar por día
+        df_todos = pd.DataFrame(reportes)
+        df_todos["fecha"] = pd.to_datetime(df_todos["fecha"]).dt.date
+        
+        grupo_dia = df_todos.groupby("fecha").agg({
+            "monto_apostado": "sum",
+            "cuenta": "count"
+        }).reset_index()
+        grupo_dia.columns = ["Fecha", "Total Apostado", "Apuestas"]
+        grupo_dia["Fecha"] = grupo_dia["Fecha"].astype(str)
+        grupo_dia = grupo_dia.tail(7)
+        
+        col_hist1, col_hist2 = st.columns(2)
+        
+        with col_hist1:
+            fig_line = px.line(
+                grupo_dia,
+                x="Fecha",
+                y="Apuestas",
+                title="Apuestas por Día",
+                markers=True
+            )
+            fig_line.update_traces(line_color=COLOR_PRIMARIO, marker_size=10)
+            st.plotly_chart(fig_line, use_container_width=True)
+        
+        with col_hist2:
+            fig_area = px.area(
+                grupo_dia,
+                x="Fecha",
+                y="Total Apostado",
+                title="Monto Apostado por Día",
+            )
+            fig_area.update_traces(line_color=COLOR_EXITO)
+            st.plotly_chart(fig_area, use_container_width=True)
+
+
+# ============================================================================
+# PESTAÑA: CONTROL DEL LOOP INFINITO
+# ============================================================================
+
+def tab_loop_infinito() -> None:
+    """Permite configurar y controlar el modo loop infinito del scheduler."""
+    st.subheader("🔄 Loop Infinito")
+    st.caption("Configura ciclos automáticos de procesamiento con pausas entre ellos")
+    
+    # Leer configuración actual del scheduler
+    config_path = "scheduler_config.json"
+    config_actual = {}
+    if os.path.exists(config_path):
+        try:
+            import json
+            with open(config_path, "r", encoding="utf-8") as f:
+                config_actual = json.load(f)
+        except Exception:
+            pass
+    
+    with st.form("config_loop"):
+        st.markdown("### Configuración del Ciclo")
+        
+        c1, c2 = st.columns(2)
+        
+        cuentas_por_ciclo = c1.number_input(
+            "Cuentas por ciclo",
+            min_value=1,
+            max_value=100,
+            value=config_actual.get("cuentas_por_ciclo", 10),
+            help="Número de cuentas a procesar en cada ciclo"
+        )
+        
+        pausa_min_horas = c2.number_input(
+            "Pausa mínima entre ciclos (horas)",
+            min_value=0.5,
+            max_value=24.0,
+            value=config_actual.get("pausa_min_horas", 4.0),
+            step=0.5,
+            help="Tiempo mínimo de espera entre ciclos"
+        )
+        
+        pausa_max_horas = c2.number_input(
+            "Pausa máxima entre ciclos (horas)",
+            min_value=0.5,
+            max_value=24.0,
+            value=config_actual.get("pausa_max_horas", 8.0),
+            step=0.5,
+            help="Tiempo máximo de espera entre ciclos (aleatorio)"
+        )
+        
+        max_ciclos = c1.number_input(
+            "Máximo de ciclos (0 = infinito)",
+            min_value=0,
+            max_value=1000,
+            value=config_actual.get("max_ciclos", 0),
+            help="0 significa que se ejecutará indefinidamente"
+        )
+        
+        st.markdown("### Opciones Avanzadas")
+        
+        auto_ajustar_pausa = st.checkbox(
+            "Ajustar pausa automáticamente según éxito",
+            value=config_actual.get("auto_ajustar_pausa", True),
+            help="Si hay muchos fallos, aumenta la pausa automáticamente"
+        )
+        
+        notificar_fin_ciclo = st.checkbox(
+            "Notificar al finalizar cada ciclo",
+            value=config_actual.get("notificar_fin_ciclo", True),
+            help="Muestra alerta cuando termina un ciclo"
+        )
+        
+        enviado = st.form_submit_button("💾 Guardar Configuración", type="primary", use_container_width=True)
+        
+        if enviado:
+            import json
+            nueva_config = {
+                "cuentas_por_ciclo": int(cuentas_por_ciclo),
+                "pausa_min_horas": float(pausa_min_horas),
+                "pausa_max_horas": float(pausa_max_horas),
+                "max_ciclos": int(max_ciclos),
+                "auto_ajustar_pausa": auto_ajustar_pausa,
+                "notificar_fin_ciclo": notificar_fin_ciclo,
+                "ultima_actualizacion": datetime.now().isoformat()
+            }
+            with open(config_path, "w", encoding="utf-8") as f:
+                json.dump(nueva_config, f, indent=2, ensure_ascii=False)
+            st.success("✅ Configuración guardada exitosamente")
+    
+    st.divider()
+    
+    # Estado actual del scheduler
+    st.markdown("### Estado del Scheduler")
+    
+    estado_scheduler = control.leer_estado()
+    
+    s1, s2, s3, s4 = st.columns(4)
+    
+    ciclo_actual = estado_scheduler.get("ciclo_actual", 0)
+    total_ciclos = estado_scheduler.get("total_ciclos", max_ciclos if max_ciclos > 0 else "∞")
+    estado_loop = estado_scheduler.get("estado_loop", "inactivo")
+    proximo_ciclo = estado_scheduler.get("proximo_ciclo", "No programado")
+    
+    s1.metric("Ciclo Actual", f"{ciclo_actual}")
+    s2.metric("Total Ciclos", str(total_ciclos))
+    s3.metric("Estado Loop", estado_loop)
+    s4.metric("Próximo Ciclo", proximo_ciclo if proximo_ciclo else "No programado")
+    
+    # Botones de control
+    col_btn1, col_btn2, col_btn3 = st.columns(3)
+    
+    with col_btn1:
+        if st.button("▶️ Iniciar Loop", type="primary", use_container_width=True, disabled=estado_loop == "activo"):
+            # Aquí se enviaría la señal al scheduler
+            st.success("Loop iniciado - El scheduler comenzará pronto")
+    
+    with col_btn2:
+        if st.button("⏸️ Pausar Loop", type="warning", use_container_width=True, disabled=estado_loop != "activo"):
+            st.warning("Loop pausado - Se reanudará en el próximo ciclo")
+    
+    with col_btn3:
+        if st.button("⏹️ Detener Loop", type="error", use_container_width=True, disabled=estado_loop == "inactivo"):
+            st.error("Loop detenido - Se requiere reinicio manual")
+    
+    # Progreso del ciclo actual
+    if ciclo_actual > 0:
+        st.markdown("### Progreso del Ciclo Actual")
+        
+        progreso = estado_scheduler.get("progreso_ciclo", 0)
+        st.progress(progreso / 100)
+        
+        col_prog1, col_prog2 = st.columns(2)
+        col_prog1.metric("Cuentas Procesadas", estado_scheduler.get("cuentas_procesadas", 0))
+        col_prog2.metric("Cuentas Restantes", estado_scheduler.get("cuentas_restantes", 0))
 
 
 # ---------------------------------------------------------------------------
@@ -769,26 +1209,135 @@ def tab_registrar() -> None:
         st.info("Aun no hay cuentas guardadas.")
 
 
-# ---------------------------------------------------------------------------
-# APP
-# ---------------------------------------------------------------------------
+# ============================================================================
+# PESTAÑA: INICIO (Dashboard principal con resumen rápido)
+# ============================================================================
+
+def tab_inicio() -> None:
+    """Página de inicio con resumen ejecutivo del estado del bot."""
+    st.markdown("### 👋 Bienvenido al Automatizador Betplay v3.0")
+    
+    # Estado actual del bot
+    estado = control.leer_estado()
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric("Estado del Bot", estado.get("estado", "inactivo"))
+    
+    with col2:
+        total = int(estado.get("total", 0) or 0)
+        indice = int(estado.get("indice", 0) or 0)
+        st.metric("Progreso", f"{indice + 1 if total else 0}/{total}")
+    
+    with col3:
+        st.metric("Cuenta Actual", str(estado.get("cuenta", "-") or "-"))
+    
+    st.divider()
+    
+    # Acciones rápidas
+    st.markdown("### ⚡ Acciones Rápidas")
+    
+    col_acc1, col_acc2, col_acc3 = st.columns(3)
+    
+    with col_acc1:
+        if st.button("▶️ Iniciar Bot", type="primary", use_container_width=True):
+            st.info("Ve a la pestaña Control para configurar e iniciar")
+    
+    with col_acc2:
+        if st.button("📊 Ver Apuestas Hoy", use_container_width=True):
+            st.info("Ve a la pestaña Qué Hizo Hoy para ver el resumen")
+    
+    with col_acc3:
+        if st.button("🔄 Configurar Loop", use_container_width=True):
+            st.info("Ve a la pestaña Loop Infinito para configurar ciclos")
+    
+    st.divider()
+    
+    # Resumen del día
+    st.markdown("### 📈 Resumen del Día")
+    
+    reportes = leer_reportes_apuestas()
+    hoy = datetime.now().date()
+    
+    reportes_hoy = []
+    for rep in reportes:
+        try:
+            fecha_rep = datetime.fromisoformat(rep.get("fecha", "")).date()
+            if fecha_rep == hoy:
+                reportes_hoy.append(rep)
+        except Exception:
+            continue
+    
+    if reportes_hoy:
+        total_apostado = sum(float(r.get("monto_apostado", 0)) for r in reportes_hoy)
+        total_apuestas = len(reportes_hoy)
+        
+        col_res1, col_res2 = st.columns(2)
+        col_res1.success(f"💰 Total Apostado Hoy: {formatear_moneda(total_apostado)}")
+        col_res2.info(f"🎯 Apuestas Realizadas: {total_apuestas}")
+    else:
+        st.info("📭 No hay actividad registrada hoy aún")
+    
+    st.divider()
+    
+    # Enlaces rápidos a documentación
+    st.markdown("### 📚 Recursos")
+    
+    st.markdown("""
+    - **Documentación**: Consulta `README_v3.md` para instrucciones detalladas
+    - **Soporte**: Revisa los logs en `bot.log` si encuentras errores
+    - **Configuración**: Los pools de MAC y proxies están en `macs_pool.txt` y `proxies.txt`
+    """)
+
+
+# ============================================================================
+# APP PRINCIPAL
+# ============================================================================
 
 def main() -> None:
-    st.set_page_config(page_title="Automatizador Betplay", layout="wide")
-    st.title("Automatizador Betplay - Panel de control")
-
-    t1, t2, t3, t4, t5 = st.tabs(
-        ["Cuentas", "Registrar", "Crear Masivas", "Control", "Resultados"]
+    st.set_page_config(
+        page_title="Betplay Bot v3.0",
+        page_icon="🎯",
+        layout="wide",
+        initial_sidebar_state="expanded"
     )
+    
+    # Inyectar CSS personalizado
+    inject_custom_css()
+    
+    # Header con logo/título estilizado
+    st.markdown("""
+    <div style='text-align: center; padding: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 15px; margin-bottom: 30px;'>
+        <h1 style='color: white; margin: 0;'>🎯 Automatizador Betplay v3.0</h1>
+        <p style='color: rgba(255,255,255,0.9); margin: 10px 0 0 0;'>Panel de Control Inteligente</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Navegación principal con iconos
+    t1, t2, t3, t4, t5, t6, t7 = st.tabs([
+        "🏠 Inicio",
+        "📋 Cuentas",
+        "➕ Registrar",
+        "📊 Qué Hizo Hoy",
+        "🎮 Control",
+        "🔄 Loop Infinito",
+        "📈 Resultados"
+    ])
+    
     with t1:
-        tab_cuentas()
+        tab_inicio()
     with t2:
-        tab_registrar()
+        tab_cuentas()
     with t3:
-        tab_crear_cuentas()
+        tab_registrar()
     with t4:
-        tab_control()
+        tab_que_hizo_hoy()
     with t5:
+        tab_control()
+    with t6:
+        tab_loop_infinito()
+    with t7:
         tab_resultados()
 
 

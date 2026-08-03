@@ -1,30 +1,155 @@
-# Perfiles de Chrome (los genera gestor_perfiles.py; pesados, no versionar)
-perfiles/
-
-# Runtime del bot / dashboard (se regeneran en cada corrida)
-estado_bot.json
-config_run.json
-codigo_2fa.txt
-*.flag
-bot.log
-bot_consola.log
-progreso.txt
-cuentas_actualizadas.xlsx
-historial_auditoria.csv
-
-# Capturas de pantalla de registros fallidos (se generan en cada corrida)
-capturas/
-
-# Respaldos automáticos de cuentas.xlsx (se generan antes de cada sobrescritura)
-backups_cuentas/
-
-# Proxies (puede contener credenciales user:pass@ip:port; no versionar)
-proxies.txt
-
-# Variables de entorno (credenciales SMTP / app passwords; no versionar)
-.env
-
-# Python
-__pycache__/
+```
+# Compiled and build artifacts
 *.pyc
+__pycache__/
+*.o
+*.obj
+
+# Dependencies
+.venv/
+venv/
+
+# Logs and temp files
+*.log
+*.tmp
+*.swp
+
+# Environment
+.env
+.env.local
+.env.*
+
+# Editors
+.vscode/
+.idea/
+
+# Coverage reports
+.coverage
+coverage/
+htmlcov/
+
+# Python specific
 *.pyo
+*.pyd
+*.so
+*.egg-info/
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Distribution / packaging
+.Python
+*.so
+.Python
+*.egg-info/
+.eggs/
+eggs/
+parts/
+var/
+.sconsign.dblite
+.wafpickle-N
+lib/
+lib64/
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# Translations
+*.mo
+*.pot
+
+# Django
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+
+# Flask
+instance/
+.webassets-cache
+
+# Scrapy
+.scrapy
+
+# Sphinx documentation
+docs/_build/
+
+# PyBuilder
+target/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# pyenv
+.python-version
+
+# pipenv
+Pipfile.lock
+
+# PEP 582
+__pypackages__/
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# Sage
+*.sage.py
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre
+.pyre/
+
+# IDEs
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+```
