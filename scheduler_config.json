@@ -1,0 +1,8 @@
+{
+  "cuentas_por_ciclo": 5,
+  "pausa_min_minutos": 60,
+  "pausa_max_minutos": 120,
+  "max_ciclos": 0,
+  "reiniciar_fallidas": true,
+  "solo_exitosas_previas": false
+}

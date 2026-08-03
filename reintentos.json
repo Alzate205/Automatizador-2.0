@@ -1,0 +1,38 @@
+{
+  "0": {
+    "fila_index": 0,
+    "datos_cuenta": {
+      "Usuario": "test_user_001",
+      "Clave": "test_pass_123",
+      "Correo": "test@example.com",
+      "Documento": "1234567890"
+    },
+    "estado": "reintentando",
+    "intentos_fallidos": [
+      {
+        "intento_num": 1,
+        "timestamp": "2026-08-03T19:35:39.262885",
+        "error_type": "registro_fallido",
+        "motivo": "Timeout en CAPTCHA",
+        "mac_usada": "00:1A:2B:3C:4D:5E",
+        "ip_usada": "192.168.1.100",
+        "perfil_id": 1001
+      },
+      {
+        "intento_num": 2,
+        "timestamp": "2026-08-03T19:35:53.460109",
+        "error_type": "registro_fallido",
+        "motivo": "Timeout en CAPTCHA",
+        "mac_usada": "00:1A:2B:3C:4D:5E",
+        "ip_usada": "192.168.1.100",
+        "perfil_id": 1001
+      }
+    ],
+    "ultimo_intento": "2026-08-03T19:35:53.460109",
+    "proximo_reintento": "2026-08-03T19:37:02.290132",
+    "exito_final": false,
+    "resultado_final": null,
+    "max_intentos": 5,
+    "backoff_base_segundos": 30
+  }
+}

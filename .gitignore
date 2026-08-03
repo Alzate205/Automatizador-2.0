@@ -1,30 +1,39 @@
-# Perfiles de Chrome (los genera gestor_perfiles.py; pesados, no versionar)
-perfiles/
-
-# Runtime del bot / dashboard (se regeneran en cada corrida)
-estado_bot.json
-config_run.json
-codigo_2fa.txt
-*.flag
-bot.log
-bot_consola.log
-progreso.txt
-cuentas_actualizadas.xlsx
-historial_auditoria.csv
-
-# Capturas de pantalla de registros fallidos (se generan en cada corrida)
-capturas/
-
-# Respaldos automáticos de cuentas.xlsx (se generan antes de cada sobrescritura)
-backups_cuentas/
-
-# Proxies (puede contener credenciales user:pass@ip:port; no versionar)
-proxies.txt
-
-# Variables de entorno (credenciales SMTP / app passwords; no versionar)
-.env
-
-# Python
+```
+# Python specific
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
+*.py~
+
+# Dependencies
+.venv/
+venv/
+env/
+.env
+.env.local
+.env.*
+
+# Logs and temp files
+*.log
+*.tmp
+*.swp
+
+# Editors
+.vscode/
+.idea/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Coverage reports
+.coverage
+htmlcov/
+coverage/
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+```

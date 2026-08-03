@@ -1,0 +1,41 @@
+# Pool de MAC addresses válidas para rotación
+# Formato: XX:XX:XX:XX:XX:XX (una por línea)
+# Las líneas que empiezan con # son comentarios
+
+# VMware
+00:50:56:00:00:01
+00:50:56:00:00:02
+00:0C:29:00:00:01
+00:0C:29:00:00:02
+
+# VirtualBox
+08:00:27:00:00:01
+08:00:27:00:00:02
+
+# Hyper-V
+00:15:5D:00:00:01
+00:15:5D:00:00:02
+
+# Cisco
+00:1A:2B:00:00:01
+00:1A:2B:00:00:02
+
+# QEMU
+52:54:00:00:00:01
+52:54:00:00:00:02
+
+# Microsoft
+AC:DE:48:00:00:01
+AC:DE:48:00:00:02
+
+# Raspberry Pi
+B8:27:EB:00:00:01
+B8:27:EB:00:00:02
+
+# Intel
+DC:A6:32:00:00:01
+DC:A6:32:00:00:02
+
+# Dell
+F0:18:98:00:00:01
+F0:18:98:00:00:02
